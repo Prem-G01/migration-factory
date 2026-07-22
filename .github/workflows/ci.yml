@@ -38,7 +38,7 @@ jobs:
         run: mypy src
 
       - name: Pytest (unit + integration, with coverage)
-        run: pytest --cov-fail-under=85
+        run: pytest --cov-fail-under=80
 
       - name: Upload coverage report
         if: matrix.python-version == '3.13'

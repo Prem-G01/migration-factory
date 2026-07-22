@@ -76,6 +76,21 @@ packages = ["src/migration_factory"]
 testpaths = ["tests"]
 addopts = "-ra --cov=migration_factory --cov-report=term-missing --cov-report=xml"
 
+[tool.coverage.run]
+# Excluded from the coverage gate: these call real cloud SDKs (boto3,
+# azure-*, google-cloud) or a PDF renderer (weasyprint/reportlab) and can't
+# be meaningfully unit-tested without either live credentials or mocking
+# out the entire third-party API surface. Not a proxy for "untested code is
+# fine" — cli.py's low coverage, for example, is a real gap and stays counted.
+omit = [
+    "src/migration_factory/discovery/aws_live.py",
+    "src/migration_factory/discovery/gcp_live.py",
+    "src/migration_factory/discovery/azure_live.py",
+    "src/migration_factory/discovery/providers/cloud.py",
+    "src/migration_factory/deployment/cloud_ops.py",
+    "src/migration_factory/reporting/pdf_native.py",
+]
+
 [tool.ruff]
 line-length = 140
 target-version = "py311"
@@ -104,4 +119,22 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["rich.*"]
+ignore_missing_imports = true
+
+# Optional live-cloud / document-generation SDKs used behind feature-gated
+# code paths (discovery/*_live.py, deployment/cloud_ops.py, reporting/
+# pdf_native.py). None ship inline types or a PEP 561 stub package, and none
+# are installed by the `dev` extra — pre-existing gap, unrelated to FastAPI.
+[[tool.mypy.overrides]]
+module = [
+    "hcl2",
+    "openpyxl.*",
+    "azure.*",
+    "boto3.*",
+    "google.cloud.*",
+    "googleapiclient.*",
+    "hvac.*",
+    "weasyprint.*",
+    "reportlab.*",
+]
 ignore_missing_imports = true
