@@ -1,5 +1,7 @@
 # Migration Factory — Foundation & Ingestion Layer (Phase 0 + Phase 1)
 
+![CI](https://github.com/Prem-G01/migration-factory/actions/workflows/ci.yml/badge.svg)
+
 AI-Powered Multi-Cloud Infrastructure Migration Factory. This repository
 currently implements **Phase 0 (Foundation)** and a working **Phase 1
 vertical slice** (Terraform State ingestion, AWS → GCP path): parse
@@ -64,6 +66,20 @@ mypy src
 # Run the CLI against the bundled sample estate
 migration-factory ingest tests/fixtures/sample_terraform.tfstate
 ```
+
+## API
+
+`pip install -e ".[api]"` then `uvicorn migration_factory.api.main:app --reload --port 8000`.
+Interactive docs are auto-generated at `/docs` (Swagger UI) and `/redoc`.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| /api/v1/health | GET | Health check |
+| /api/v1/analyze | POST | Upload + analyze infrastructure |
+| /api/v1/report/{id} | GET | Full JSON report |
+| /api/v1/report/{id}/html | GET | HTML report |
+| /api/v1/terraform/{id} | GET | Download Terraform zip |
+| /api/v1/runs | GET | List all runs |
 
 ## Extending: adding a new parser or mapper
 
