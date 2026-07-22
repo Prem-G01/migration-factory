@@ -208,18 +208,20 @@ class AssessmentEngine:
             )
             all_blockers.extend(blockers)
 
+        unique_blockers = list(dict.fromkeys(all_blockers))
+
         overall_score = self._compute_overall_score(resource_assessments)
         risk_level = self._classify_risk(resource_assessments)
         phases = self._build_phases(graph, resource_assessments)
         recommendation = self._generate_recommendation(
-            overall_score, risk_level, all_blockers
+            overall_score, risk_level, unique_blockers
         )
 
         assessment = MigrationAssessment(
             overall_complexity_score=overall_score,
             risk_level=risk_level,
             resource_assessments=resource_assessments,
-            blockers=all_blockers,
+            blockers=unique_blockers,
             phases=phases,
             recommendation=recommendation,
         )
@@ -229,7 +231,7 @@ class AssessmentEngine:
             overall_score=overall_score,
             risk_level=risk_level.value,
             resource_count=len(resource_assessments),
-            blocker_count=len(all_blockers),
+            blocker_count=len(unique_blockers),
             phase_count=len(phases),
         )
         return assessment
