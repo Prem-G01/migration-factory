@@ -1,421 +1,495 @@
 {
-  "matrix_version": "1.0.0",
+  "matrix_version": "2.0.0",
   "source_provider": "gcp",
   "target_provider": "aws",
   "rules": [
     {
       "canonical_type": "network.vpc",
-      "target_service": "Network Vpc",
-      "target_terraform_types": [],
+      "target_service": "Amazon VPC",
+      "target_terraform_types": [
+        "aws_vpc"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: GCP VPC networks are global; the AWS VPC-level CIDR block has no direct equivalent and CIDR planning moves to subnet level",
-        "Reverse of AWS->GCP: Set auto_create_subnetworks=false to mirror AWS's explicit-subnet model"
+        "Assign an explicit top-level CIDR block for the AWS VPC: GCP networks have no VPC-level CIDR, so one must be chosen wide enough to contain every subnet being migrated",
+        "Recreate GCP's implicit global routing scope as a single-region AWS VPC; multi-region GCP networks require one AWS VPC per target region plus explicit peering"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: AWS VPC and GCP VPC Network serve the same isolation-boundary role; the structural difference (regio...",
+      "rationale": "A GCP VPC network and an AWS VPC serve the same isolation-boundary role, but GCP's network is global while AWS VPCs are regional. The global-to-regional collapse is the only structural gap, and it is fully resolved by the CIDR-block and per-region decisions above.",
       "complexity_weight": 3
     },
     {
       "canonical_type": "network.subnet",
-      "target_service": "Network Subnet",
-      "target_terraform_types": [],
+      "target_service": "VPC Subnet",
+      "target_terraform_types": [
+        "aws_subnet"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: GCP subnets are regional, not zonal: map the AWS availability zone to its parent region",
-        "Reverse of AWS->GCP: Enable private_ip_google_access where instances previously used AWS VPC endpoints for service access"
+        "GCP subnets are regional; AWS subnets are zonal — each GCP subnet must be split into one AWS subnet per availability zone it needs to reach",
+        "private_ip_google_access has no AWS analog; equivalent private connectivity to AWS-managed services is provided by VPC endpoints, which must be provisioned separately"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Direct conceptual equivalent. Regional (GCP) vs zonal (AWS) scope typically REDUCES subnet count in ...",
+      "rationale": "Direct conceptual equivalent, but the regional (GCP) vs zonal (AWS) scope inverts the forward direction's simplification: migrating to AWS typically INCREASES subnet count, since each region-wide GCP subnet becomes multiple zone-scoped AWS subnets.",
       "complexity_weight": 3
     },
     {
       "canonical_type": "network.firewall_rule",
-      "target_service": "Network Firewall_Rule",
-      "target_terraform_types": [],
+      "target_service": "Security Group",
+      "target_terraform_types": [
+        "aws_security_group"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: AWS security groups are instance-attached and implicitly deny-all; GCP firewall rules are VPC-level and target instances via network tags or service accounts \u2014 each SG becomes one or more tagged rules",
-        "Reverse of AWS->GCP: AWS SG egress rules must be modeled as explicit GCP egress rules (GCP default allows egress; AWS SGs constrain it)"
+        "GCP firewall rules are VPC-level and target instances via network tags or service accounts; AWS security groups are instance-attached, so each tag-targeted rule becomes a security group applied to every matching instance",
+        "GCP's default-deny-ingress / allow-all-egress posture must be made explicit: AWS security groups require every allowed egress path to be listed, not just ingress"
       ],
       "manual_actions": [
-        "Review the generated tag/service-account targeting scheme: SG-to-SG references (source_security_group_id) have no direct GCP equivalent and must be re-expressed as tag-to-tag rules"
+        "Review the generated security-group boundaries: GCP tag-to-tag rules (source/target tags) have no direct AWS equivalent and must be re-expressed as security-group-to-security-group references"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Both enforce L3/L4 network policy, but the attachment model differs fundamentally (per-instance stat...",
+      "rationale": "Both enforce L3/L4 network policy, but the attachment model differs fundamentally (network-level tagged rules vs per-instance stateful groups). Automatable for simple CIDR-based rules; tag-to-tag reference graphs need human review, hence PARTIAL.",
       "complexity_weight": 6
     },
     {
       "canonical_type": "compute.instance",
-      "target_service": "Compute Instance",
-      "target_terraform_types": [],
+      "target_service": "EC2 Instance",
+      "target_terraform_types": [
+        "aws_instance"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: AMIs cannot be used directly: rebuild via image pipeline or import with Migrate to Virtual Machines",
-        "Reverse of AWS->GCP: Map instance types (e.g. t3.medium -> e2-medium) by vCPU/memory profile"
+        "GCP images cannot be booted directly on EC2: rebuild the OS image via an AMI bakery pipeline or import it with AWS Application Migration Service",
+        "Map GCP machine types (e.g. e2-medium) to EC2 instance types (e.g. t3.medium) by vCPU/memory profile",
+        "GCP startup-script metadata becomes EC2 user_data",
+        "An attached GCP service account becomes an EC2 instance profile (IAM role)"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: VM-to-VM is the most mechanically translatable workload class. Image conversion is solved tooling (M...",
+      "rationale": "VM-to-VM is the most mechanically translatable workload class. Image conversion is solved tooling, and machine-type mapping is a lookup table — differences are numerous but each is individually automatable.",
       "complexity_weight": 5
     },
     {
       "canonical_type": "storage.object_bucket",
-      "target_service": "Storage Object_Bucket",
-      "target_terraform_types": [],
+      "target_service": "Amazon S3",
+      "target_terraform_types": [
+        "aws_s3_bucket"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: Bucket names are globally unique in both clouds but the namespaces are separate: verify target name availability or apply a rename convention",
-        "Reverse of AWS->GCP: S3 bucket policies and ACLs must be re-expressed as Cloud Storage IAM bindings"
+        "Bucket names are globally unique in both clouds but the namespaces are separate: verify the target S3 name is available or apply a rename convention",
+        "Cloud Storage IAM bindings and uniform bucket-level access must be re-expressed as S3 bucket policies and ACLs",
+        "GCS storage classes map to S3 classes (STANDARD/NEARLINE->STANDARD_IA/COLDLINE->GLACIER/ARCHIVE->DEEP_ARCHIVE)"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Object storage semantics are near-identical between S3 and GCS; Storage Transfer Service handles dat...",
+      "rationale": "Object storage semantics are near-identical between GCS and S3; AWS DataSync or S3 batch operations handle data movement natively. Access-policy translation is rule-driven (IAM bindings -> S3 policy JSON).",
       "complexity_weight": 4
     },
     {
       "canonical_type": "database.instance",
-      "target_service": "Database Instance",
-      "target_terraform_types": [],
+      "target_service": "Amazon RDS",
+      "target_terraform_types": [
+        "aws_db_instance",
+        "aws_rds_cluster"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: Verify engine/version parity: RDS engine versions do not always have a matching Cloud SQL version",
-        "Reverse of AWS->GCP: Cloud SQL private IP requires Private Service Access (a service networking connection + reserved peering range on the VPC) \u2014 this is an additional dependency that does not exist in the AWS source"
+        "Verify engine/version parity: Cloud SQL engine versions do not always have a matching RDS version",
+        "Cloud SQL's Private Service Access requirement disappears: RDS private connectivity uses a DB subnet group inside the existing VPC instead — this is a simplification, not an added dependency",
+        "Cloud SQL database flags become RDS parameter groups (not all parameters have equivalents)"
       ],
       "manual_actions": [
-        "Plan the data migration itself (Database Migration Service or dump/restore) including a cutover window \u2014 infrastructure translation does not move data"
+        "Plan the data migration itself (AWS Database Migration Service or dump/restore) including a cutover window — infrastructure translation does not move data"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Managed-SQL to managed-SQL is conceptually clean but operationally the highest-risk resource class: ...",
+      "rationale": "Managed-SQL to managed-SQL is conceptually clean but operationally the highest-risk resource class: it carries state and needs a data-migration plan outside Terraform's scope. PARTIAL, not SUPPORTED, precisely because the infrastructure translation alone is insufficient.",
       "complexity_weight": 8
     },
     {
       "canonical_type": "iam.role",
-      "target_service": "Iam Role",
-      "target_terraform_types": [],
+      "target_service": "IAM Role",
+      "target_terraform_types": [
+        "aws_iam_role",
+        "aws_iam_role_policy_attachment"
+      ],
       "status": "manual",
       "required_changes": [
-        "Reverse of AWS->GCP: An AWS IAM role (trust policy + attached permission policies) decomposes into a GCP service account plus project/resource-level IAM bindings",
-        "Reverse of AWS->GCP: AWS managed policies have no 1:1 GCP predefined-role equivalents; each policy's effective permissions must be mapped to the nearest predefined role or a custom role"
+        "A GCP service account plus its project/resource-level IAM bindings decomposes into an AWS IAM role with a trust policy and one or more attached permission policies",
+        "GCP predefined/custom roles have no 1:1 AWS managed-policy equivalents; each role's effective permissions must be mapped to the nearest managed policy or a customer-managed policy"
       ],
       "manual_actions": [
-        "Security review of every translated role: permission models differ enough (resource-level conditions, service-specific actions) that automated mapping risks silent privilege escalation or breakage",
-        "Redesign trust relationships: AWS AssumeRole patterns become service account impersonation or Workload Identity Federation"
+        "Security review of every translated role: permission models differ enough (IAM conditions, resource hierarchies, service-specific permissions) that automated mapping risks silent privilege escalation or breakage",
+        "Redesign trust relationships: GCP service-account impersonation and Workload Identity Federation become AWS AssumeRole trust policies (and IAM Roles Anywhere for external federation)"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: IAM is where the two clouds' models diverge most. Mechanical translation is possible for trivial rol...",
+      "rationale": "IAM is where the two clouds' models diverge most. Mechanical translation is possible for trivial roles but dangerous at scale — an over-permissive mapping is a security incident, an under-permissive one is an outage. MANUAL by policy: the platform proposes, a human approves.",
       "complexity_weight": 9
     },
     {
       "canonical_type": "load_balancer",
-      "target_service": "Load_Balancer",
-      "target_terraform_types": [],
+      "target_service": "Elastic Load Balancing",
+      "target_terraform_types": [
+        "aws_lb",
+        "aws_lb_listener",
+        "aws_lb_target_group"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: One AWS ALB fans out to five GCP resources (forwarding rule, target proxy, URL map, backend service, health check) \u2014 this is a 1:N translation",
-        "Reverse of AWS->GCP: AWS NLB maps to GCP passthrough Network Load Balancer instead of the HTTPS stack; the load_balancer_type native attribute determines which target stack applies"
+        "GCP's five-resource LB stack (forwarding rule, target proxy, URL map, backend service, health check) collapses into three AWS resources (load balancer, listener, target group) — this is an N:1 translation",
+        "GCP's passthrough Network Load Balancer maps to an AWS Network Load Balancer instead of the ALB stack; the load_balancer_type native attribute determines which target type applies",
+        "Google-managed or self-managed SSL certificates become ACM certificates or imported certificates attached to the listener"
       ],
       "manual_actions": [
-        "Validate listener/target-group rules against the generated URL map: complex ALB routing rules (header/query conditions) may need restructuring"
+        "Validate URL-map path/host rules against the generated ALB listener rules: complex routing (header/query conditions) may need restructuring to fit ALB's rule-condition model"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Functionally equivalent capability, structurally very different composition. The 1:N fan-out is full...",
+      "rationale": "Functionally equivalent capability, structurally very different composition. The N:1 collapse is fully rule-expressible, but routing-rule fidelity for complex URL maps warrants human validation, hence PARTIAL.",
       "complexity_weight": 7
     },
     {
       "canonical_type": "network.nat_gateway",
-      "target_service": "Network Nat_Gateway",
-      "target_terraform_types": [],
+      "target_service": "NAT Gateway",
+      "target_terraform_types": [
+        "aws_nat_gateway",
+        "aws_eip"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: Cloud NAT is router-based; one NAT config per Cloud Router vs one NAT gateway per AZ in AWS",
-        "Reverse of AWS->GCP: Elastic IP allocation model differs: Cloud NAT auto-allocates or uses reserved IPs"
+        "Cloud NAT is router-based (one config per Cloud Router, covering a whole region); AWS requires one NAT gateway per availability zone for equivalent redundancy",
+        "Cloud NAT's auto-allocated or reserved IPs become AWS Elastic IPs, which must be allocated explicitly and attached to each NAT gateway"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Both provide managed NAT for private instances. GCP Cloud NAT is regional and router-attached vs AWS...",
+      "rationale": "Both provide managed NAT for private instances. AWS's per-AZ NAT gateway model is more granular than GCP's regional Cloud-Router attachment, which typically increases the resource count on this side of the migration.",
       "complexity_weight": 4
     },
     {
       "canonical_type": "network.vpn",
-      "target_service": "Network Vpn",
-      "target_terraform_types": [],
+      "target_service": "AWS Site-to-Site VPN",
+      "target_terraform_types": [
+        "aws_vpn_gateway",
+        "aws_vpn_connection"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: Tunnel configuration parameters (IKE version, shared secret, BGP config) must be re-established",
-        "Reverse of AWS->GCP: HA VPN on GCP uses 2 tunnels per gateway interface vs AWS VPN with 2 tunnels per connection"
+        "Tunnel configuration parameters (IKE version, shared secret, BGP config) must be re-established on the AWS side",
+        "GCP HA VPN's 2-tunnels-per-gateway-interface model becomes AWS's 2-tunnels-per-connection model — tunnel count is preserved but the grouping differs"
       ],
       "manual_actions": [
-        "Coordinate VPN cutover with on-premises network team to avoid connectivity gaps"
+        "Coordinate VPN cutover with the on-premises network team to avoid connectivity gaps"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: IPsec VPN is standardized across clouds. Configuration differs but the protocol is the same, making ...",
+      "rationale": "IPsec VPN is standardized across clouds. Configuration differs but the protocol is the same, making this a well-understood migration path.",
       "complexity_weight": 5
     },
     {
       "canonical_type": "network.peering",
-      "target_service": "Network Peering",
-      "target_terraform_types": [],
+      "target_service": "VPC Peering Connection",
+      "target_terraform_types": [
+        "aws_vpc_peering_connection"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: GCP peering is bi-directional by configuration; AWS requires peering on both sides separately",
-        "Reverse of AWS->GCP: Peering across organizations requires additional IAM permissions"
+        "GCP peering is bi-directional by a single configuration; AWS requires a peering connection request on one side and an explicit accepter resource on the other",
+        "Cross-account peering requires the accepter account ID and, if applicable, a resource share or role trust for the acceptance step"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: VPC peering is conceptually identical. The bi-directional nature of GCP peering simplifies setup com...",
+      "rationale": "VPC peering is conceptually identical. AWS's separate request/accept step is the only structural difference from GCP's single bi-directional resource, and it is fully mechanical.",
       "complexity_weight": 3
     },
     {
       "canonical_type": "network.route_table",
-      "target_service": "Network Route_Table",
-      "target_terraform_types": [],
+      "target_service": "Route Table",
+      "target_terraform_types": [
+        "aws_route_table"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: GCP routes are VPC-level resources, not subnet-associated route tables as in AWS",
-        "Reverse of AWS->GCP: Each AWS route table entry becomes a separate google_compute_route resource"
+        "GCP routes are VPC-level resources with no subnet association; AWS route tables are explicitly associated with one or more subnets, so each target subnet needs that association added",
+        "Each GCP route becomes a route entry inside the appropriate AWS route table rather than a standalone resource"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Route semantics are equivalent; the association model differs (VPC-level vs subnet-level) but the tr...",
+      "rationale": "Route semantics are equivalent; the association model differs (VPC-level vs subnet-level route tables) but the translation is mechanical.",
       "complexity_weight": 3
     },
     {
       "canonical_type": "compute.serverless_function",
-      "target_service": "Compute Serverless_Function",
-      "target_terraform_types": [],
+      "target_service": "AWS Lambda",
+      "target_terraform_types": [
+        "aws_lambda_function"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: Lambda layers have no direct equivalent; bundle dependencies into the deployment package",
-        "Reverse of AWS->GCP: Lambda@Edge becomes Cloud Run with custom domains or Cloud CDN integration"
+        "Cloud Functions runtimes map to Lambda runtimes, but exact version availability differs and must be verified per language",
+        "Cloud Run's request-concurrency model (multiple concurrent requests per instance) has no Lambda equivalent: Lambda is one invocation per execution environment, which changes cost and cold-start characteristics for high-concurrency functions",
+        "GCP Secret Manager references in environment variables must be re-mapped to AWS Secrets Manager or Parameter Store references"
       ],
       "manual_actions": [
-        "Review and test function code for AWS SDK calls that need replacement with GCP client libraries",
-        "Validate event source mappings: S3->GCS triggers, SNS->Pub/Sub triggers, API GW->Cloud Endpoints"
+        "Review and test function code for GCP client library calls (Cloud Storage, Pub/Sub, Firestore SDKs) that need replacement with AWS SDK equivalents",
+        "Validate event source mappings: GCS->S3 event notifications, Pub/Sub->SNS/SQS/EventBridge triggers, Cloud Endpoints->API Gateway"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: FaaS-to-FaaS is conceptually clean but implementation details diverge significantly: event sources, ...",
+      "rationale": "FaaS-to-FaaS is conceptually clean but implementation details diverge significantly: event sources, concurrency model, and SDK surface all need per-function verification rather than a single mechanical rule.",
       "complexity_weight": 7
     },
     {
       "canonical_type": "compute.container_cluster",
-      "target_service": "Compute Container_Cluster",
-      "target_terraform_types": [],
+      "target_service": "Amazon EKS",
+      "target_terraform_types": [
+        "aws_eks_cluster",
+        "aws_eks_node_group"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: EKS add-ons (VPC CNI, CoreDNS, kube-proxy) become GKE-managed components",
-        "Reverse of AWS->GCP: Node group configurations map to GKE node pools with GCE machine types"
+        "GKE-managed add-ons (kube-dns, GKE networking, Workload Identity) become explicit EKS add-ons (CoreDNS, VPC CNI, IAM Roles for Service Accounts) that must be installed and configured separately",
+        "GKE node pools map to EKS managed node groups with equivalent EC2 instance types"
       ],
       "manual_actions": [
-        "Migrate Kubernetes manifests: check for AWS-specific annotations, storage classes, and ingress controllers",
-        "Re-establish CI/CD pipeline to target GKE cluster"
+        "Migrate Kubernetes manifests: check for GKE-specific annotations, storage classes (GCP Persistent Disk CSI), and the GKE Ingress controller, all of which need EKS/AWS equivalents",
+        "Re-establish CI/CD pipeline to target the EKS cluster"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Both are managed Kubernetes. The control plane is equivalent; differences are in node management, ne...",
+      "rationale": "Both are managed Kubernetes. The control plane is equivalent; differences are in node management, networking add-ons, and storage integration, all of which are well-documented migration steps rather than open unknowns.",
       "complexity_weight": 8
     },
     {
       "canonical_type": "compute.container_service",
-      "target_service": "Compute Container_Service",
-      "target_terraform_types": [],
+      "target_service": "Amazon ECS / Fargate",
+      "target_terraform_types": [
+        "aws_ecs_cluster",
+        "aws_ecs_service",
+        "aws_ecs_task_definition"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: ECS task definitions map to Cloud Run service specifications",
-        "Reverse of AWS->GCP: ECS service discovery becomes Cloud Run internal URLs or Service Directory"
+        "Cloud Run service specifications map to an ECS task definition plus a service definition",
+        "Cloud Run's internal URLs or Service Directory-based discovery become ECS service discovery via AWS Cloud Map"
       ],
       "manual_actions": [
-        "Review container images for AWS SDK dependencies",
-        "Reconfigure service mesh and load balancer integrations"
+        "Review container images for GCP SDK dependencies",
+        "Reconfigure load balancer and service-mesh integrations for the ALB + ECS service model"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: ECS/Fargate to Cloud Run is a good fit for stateless HTTP workloads. Stateful or non-HTTP ECS tasks ...",
+      "rationale": "Cloud Run to ECS/Fargate is a good fit for stateless HTTP workloads. Cloud Run's scale-to-zero, per-request billing has no ECS equivalent — Fargate's minimum-task-count model is a cost/behavior tradeoff rather than a translation gap.",
       "complexity_weight": 7
     },
     {
       "canonical_type": "storage.block_volume",
-      "target_service": "Storage Block_Volume",
-      "target_terraform_types": [],
+      "target_service": "Amazon EBS",
+      "target_terraform_types": [
+        "aws_ebs_volume"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: EBS volume types map to PD types: gp3->pd-balanced, io2->pd-ssd, st1->pd-standard",
-        "Reverse of AWS->GCP: Snapshot schedules must be recreated as GCP resource policies"
+        "GCP Persistent Disk types map to EBS volume types: pd-balanced->gp3, pd-ssd->io2, pd-standard->st1",
+        "GCP resource policies (snapshot schedules) must be recreated as AWS Data Lifecycle Manager policies"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Block storage semantics are nearly identical. Volume type mapping is a lookup table. Data migration ...",
+      "rationale": "Block storage semantics are nearly identical. Volume type mapping is a lookup table. Data migration for attached volumes follows the owning compute instance's migration path.",
       "complexity_weight": 3
     },
     {
       "canonical_type": "storage.file_system",
-      "target_service": "Storage File_System",
-      "target_terraform_types": [],
+      "target_service": "Amazon EFS",
+      "target_terraform_types": [
+        "aws_efs_file_system"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: EFS performance modes (general/maxIO) map to Filestore tiers (BASIC/HIGH_SCALE)",
-        "Reverse of AWS->GCP: EFS access points have no direct Filestore equivalent; use NFS export options instead"
+        "Filestore tiers (BASIC/HIGH_SCALE) map to EFS performance modes (general purpose/max I/O), but the capacity-provisioning models differ: Filestore is fixed-capacity, EFS is elastic",
+        "Filestore's NFS export options become EFS access points, which additionally support POSIX user/group enforcement not present in Filestore"
       ],
       "manual_actions": [
-        "Plan data migration: no native cross-cloud file system sync; use rsync or a transfer appliance"
+        "Plan data migration: no native cross-cloud file system sync; use AWS DataSync or rsync over a temporary network path"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Both are managed NFS but feature sets diverge: EFS is elastic and serverless, Filestore is provision...",
+      "rationale": "Both are managed NFS but feature sets diverge: Filestore is fixed-capacity and provisioned, EFS is elastic and serverless — moving from fixed to elastic capacity is a simplification, but the migration still requires an explicit data-transfer step.",
       "complexity_weight": 6
     },
     {
       "canonical_type": "database.nosql",
-      "target_service": "Database Nosql",
-      "target_terraform_types": [],
+      "target_service": "Amazon DynamoDB",
+      "target_terraform_types": [
+        "aws_dynamodb_table"
+      ],
       "status": "manual",
       "required_changes": [
-        "Reverse of AWS->GCP: DynamoDB data model (partition key + sort key) does not map 1:1 to Firestore document model",
-        "Reverse of AWS->GCP: DynamoDB Streams become Firestore real-time listeners or Change Streams"
+        "Firestore's document/collection model does not map 1:1 to DynamoDB's partition-key + sort-key model — the data model needs redesigning around DynamoDB access patterns, not a field-by-field translation",
+        "Firestore real-time listeners or Bigtable Change Streams become DynamoDB Streams"
       ],
       "manual_actions": [
-        "Redesign data model: DynamoDB key-value patterns require rethinking for Firestore document hierarchy or Bigtable row-key design",
-        "Rewrite application data access layer: DynamoDB SDK calls must be replaced with Firestore/Bigtable client libraries"
+        "Redesign data model: Firestore document hierarchies or Bigtable row-key designs require rethinking as DynamoDB partition/sort-key patterns",
+        "Rewrite application data access layer: Firestore/Bigtable client library calls must be replaced with the DynamoDB SDK"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: NoSQL-to-NoSQL is the highest-risk database migration: data models are fundamentally incompatible. D...",
+      "rationale": "NoSQL-to-NoSQL is the highest-risk database migration: data models are fundamentally incompatible. Data model redesign and application-layer rewrites make this the platform's most manual database migration path, hence MANUAL.",
       "complexity_weight": 10
     },
     {
       "canonical_type": "database.cache",
-      "target_service": "Database Cache",
-      "target_terraform_types": [],
+      "target_service": "Amazon ElastiCache",
+      "target_terraform_types": [
+        "aws_elasticache_cluster",
+        "aws_elasticache_replication_group"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: ElastiCache Redis maps directly to Memorystore for Redis",
-        "Reverse of AWS->GCP: ElastiCache Memcached maps to Memorystore for Memcached"
+        "Memorystore for Redis maps directly to ElastiCache for Redis",
+        "Memorystore for Memcached maps to ElastiCache for Memcached"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Managed Redis/Memcached is semantically identical across clouds. Configuration parameters differ but...",
+      "rationale": "Managed Redis/Memcached is semantically identical across clouds. Configuration parameters differ but every one has a direct ElastiCache equivalent.",
       "complexity_weight": 4
     },
     {
       "canonical_type": "iam.policy",
-      "target_service": "Iam Policy",
-      "target_terraform_types": [],
+      "target_service": "IAM Managed Policy",
+      "target_terraform_types": [
+        "aws_iam_policy"
+      ],
       "status": "manual",
       "required_changes": [
-        "Reverse of AWS->GCP: AWS IAM policy actions must be mapped to GCP IAM permissions (different namespace and granularity)",
-        "Reverse of AWS->GCP: Resource-level conditions differ fundamentally between AWS and GCP IAM"
+        "GCP IAM permissions must be mapped to AWS IAM policy actions (different namespace and granularity)",
+        "GCP IAM conditions (resource-attribute based) differ fundamentally from AWS IAM policy conditions (context-key based)"
       ],
       "manual_actions": [
-        "Security review of every translated policy: AWS and GCP permission models are not isomorphic"
+        "Security review of every translated policy: GCP and AWS permission models are not isomorphic"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: IAM policies are the most security-sensitive translation in the platform. Automated mapping risks si...",
+      "rationale": "IAM policies are the most security-sensitive translation in the platform. Automated mapping risks silent privilege escalation in either direction. MANUAL by design, matching the iam.role rule's stance.",
       "complexity_weight": 9
     },
     {
       "canonical_type": "secrets.manager",
-      "target_service": "Secrets Manager",
-      "target_terraform_types": [],
+      "target_service": "AWS Secrets Manager",
+      "target_terraform_types": [
+        "aws_secretsmanager_secret"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: Secret values must be migrated securely (never in Terraform state)",
-        "Reverse of AWS->GCP: Rotation policies must be reconfigured"
+        "Secret values must be migrated securely (never through Terraform state or plan output)",
+        "GCP Secret Manager rotation functions (Cloud Functions-triggered) must be reconfigured as AWS Secrets Manager rotation Lambdas"
       ],
       "manual_actions": [
         "Securely transfer secret values outside of Terraform using a migration script with appropriate access controls"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Secrets management semantics are very similar across clouds. The infrastructure (secret resource + I...",
+      "rationale": "Secrets management semantics are very similar across clouds. The infrastructure (secret resource + IAM access policy) is mechanical; only the secret material itself requires an out-of-band, access-controlled transfer.",
       "complexity_weight": 5
     },
     {
       "canonical_type": "security.certificate",
-      "target_service": "Security Certificate",
-      "target_terraform_types": [],
+      "target_service": "AWS Certificate Manager",
+      "target_terraform_types": [
+        "aws_acm_certificate"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: ACM certificates become Google-managed or uploaded certificates",
-        "Reverse of AWS->GCP: DNS validation records must be recreated in Cloud DNS"
+        "Google-managed certificates become ACM certificates with DNS or email validation",
+        "DNS validation records must be recreated in Route 53"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Certificate management is functionally equivalent. Google-managed certificates handle auto-renewal s...",
+      "rationale": "Certificate management is functionally equivalent. ACM handles auto-renewal the same way Google-managed certificates do, so this is a like-for-like swap once DNS validation is re-pointed.",
       "complexity_weight": 3
     },
     {
       "canonical_type": "cdn.distribution",
-      "target_service": "Cdn Distribution",
-      "target_terraform_types": [],
+      "target_service": "Amazon CloudFront",
+      "target_terraform_types": [
+        "aws_cloudfront_distribution"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: CloudFront behaviors map to URL map path rules",
-        "Reverse of AWS->GCP: Lambda@Edge functions require replacement with Cloud Run or Cloud Functions"
+        "URL map path rules become CloudFront cache behaviors",
+        "Cloud Run/Cloud Functions edge logic requires replacement with Lambda@Edge or CloudFront Functions"
       ],
       "manual_actions": [
         "Review and test cache invalidation workflows",
         "Validate custom error pages and redirect rules"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: CDN functionality is equivalent but configuration models differ significantly. Simple static-asset d...",
+      "rationale": "CDN functionality is equivalent but configuration models differ significantly. Simple static-asset distributions translate cleanly; edge-compute logic needs a genuine rewrite, hence PARTIAL.",
       "complexity_weight": 6
     },
     {
       "canonical_type": "dns.zone",
-      "target_service": "Dns Zone",
-      "target_terraform_types": [],
+      "target_service": "Route 53 Hosted Zone",
+      "target_terraform_types": [
+        "aws_route53_zone"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: NS records at the registrar must be updated to point to Cloud DNS name servers",
-        "Reverse of AWS->GCP: Route53 health checks become GCP health checks with routing policies"
+        "NS records at the domain registrar must be updated to point to the new Route 53 name servers",
+        "GCP health-check-based routing policies become Route 53 health checks with routing policies (weighted/latency/failover)"
       ],
       "manual_actions": [
         "Coordinate DNS cutover to minimize resolution disruption"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: DNS zone management is semantically identical. The zone transfer is mechanical; the cutover is opera...",
+      "rationale": "DNS zone management is semantically identical. The zone transfer is mechanical; the cutover is operational, hence the manual coordination step rather than an automation gap.",
       "complexity_weight": 3
     },
     {
       "canonical_type": "dns.record",
-      "target_service": "Dns Record",
-      "target_terraform_types": [],
+      "target_service": "Route 53 Record",
+      "target_terraform_types": [
+        "aws_route53_record"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: Route53 alias records become standard A/AAAA records pointing to GCP resource IPs",
-        "Reverse of AWS->GCP: Weighted/latency routing policies require Traffic Director or external DNS"
+        "Standard A/AAAA/CNAME records translate directly",
+        "GCP's geo/weighted routing policy records require Route 53 weighted or latency-based routing policies to reproduce the same behavior"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Standard DNS records are protocol-level identical. Advanced routing features (weighted, geolocation)...",
+      "rationale": "Standard DNS records are protocol-level identical. Advanced routing features (weighted, geolocation) have direct Route 53 equivalents, so no manual step is required.",
       "complexity_weight": 2
     },
     {
       "canonical_type": "messaging.topic",
-      "target_service": "Messaging Topic",
-      "target_terraform_types": [],
+      "target_service": "Amazon SNS",
+      "target_terraform_types": [
+        "aws_sns_topic"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: SNS subscriptions become Pub/Sub subscriptions",
-        "Reverse of AWS->GCP: SNS message filtering maps to Pub/Sub subscription filters"
+        "Pub/Sub subscriptions become SNS subscriptions",
+        "Pub/Sub subscription filters map to SNS message filtering policies"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Pub/sub messaging semantics are near-identical. SNS topics map 1:1 to Pub/Sub topics; subscription t...",
+      "rationale": "Pub/sub messaging semantics are near-identical. Pub/Sub topics map 1:1 to SNS topics; subscription translation is rule-driven.",
       "complexity_weight": 3
     },
     {
       "canonical_type": "messaging.queue",
-      "target_service": "Messaging Queue",
-      "target_terraform_types": [],
+      "target_service": "Amazon SQS",
+      "target_terraform_types": [
+        "aws_sqs_queue"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: SQS standard queues map to Pub/Sub pull subscriptions",
-        "Reverse of AWS->GCP: SQS FIFO queues require Cloud Tasks with ordering or Pub/Sub ordering keys"
+        "Pub/Sub pull subscriptions map to SQS standard queues",
+        "Cloud Tasks with ordering, or Pub/Sub ordering keys, require SQS FIFO queues to preserve the same ordering guarantee"
       ],
       "manual_actions": [
-        "Evaluate whether Cloud Tasks or Pub/Sub pull subscription better fits each queue usage pattern"
+        "Evaluate whether SQS standard or FIFO better fits each queue's ordering and throughput requirements"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Queue semantics partially overlap: simple work queues translate well, but FIFO ordering guarantees a...",
+      "rationale": "Queue semantics partially overlap: simple work queues translate well, but ordering guarantees and exactly-once delivery semantics don't line up 1:1 between Cloud Tasks/Pub-Sub and SQS, hence PARTIAL.",
       "complexity_weight": 5
     },
     {
       "canonical_type": "monitoring.alarm",
-      "target_service": "Monitoring Alarm",
-      "target_terraform_types": [],
+      "target_service": "CloudWatch Alarm",
+      "target_terraform_types": [
+        "aws_cloudwatch_metric_alarm"
+      ],
       "status": "partial",
       "required_changes": [
-        "Reverse of AWS->GCP: CloudWatch metric namespaces map to GCP monitoring metric types",
-        "Reverse of AWS->GCP: Alarm actions (SNS) become notification channels (Pub/Sub, email, PagerDuty)"
+        "GCP monitoring metric types map to CloudWatch metric namespaces",
+        "Notification channels (Pub/Sub, email, PagerDuty) become CloudWatch alarm actions (SNS, email, PagerDuty integration via SNS)"
       ],
       "manual_actions": [
-        "Validate alert thresholds against GCP metric semantics, which may report differently than CloudWatch"
+        "Validate alert thresholds against CloudWatch metric semantics, which may report differently than GCP Monitoring (e.g. different aggregation windows)"
       ],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Alerting concepts are equivalent but metric namespaces and evaluation semantics differ. Threshold va...",
+      "rationale": "Alerting concepts are equivalent but metric namespaces and evaluation semantics differ. Threshold validation is required per-metric rather than being assumable from the source configuration.",
       "complexity_weight": 5
     },
     {
       "canonical_type": "monitoring.log_group",
-      "target_service": "Monitoring Log_Group",
-      "target_terraform_types": [],
+      "target_service": "CloudWatch Log Group",
+      "target_terraform_types": [
+        "aws_cloudwatch_log_group"
+      ],
       "status": "supported",
       "required_changes": [
-        "Reverse of AWS->GCP: CloudWatch Log Groups become Cloud Logging log buckets or default _Default bucket",
-        "Reverse of AWS->GCP: Log retention policies must be reconfigured"
+        "Cloud Logging buckets become CloudWatch Log Groups",
+        "Log retention policies must be reconfigured to CloudWatch's retention-period model"
       ],
       "manual_actions": [],
-      "rationale": "GCP-to-AWS reverse mapping. Original AWS->GCP rationale: Centralized logging is functionally equivalent. GCP Cloud Logging auto-ingests from GCE/GKE; explici...",
+      "rationale": "Centralized logging is functionally equivalent. CloudWatch auto-ingests from EC2/ECS/EKS the same way Cloud Logging auto-ingests from GCE/GKE, so this is a like-for-like swap.",
       "complexity_weight": 3
     }
   ]

@@ -366,6 +366,236 @@ _GCP_GENERATORS: dict[CanonicalResourceType, Any] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# AWS Terraform block generators — one per canonical type
+# ---------------------------------------------------------------------------
+
+# GCP machine types have no formal vCPU/memory equivalence table on the AWS
+# side within this POC; this is a pragmatic lookup, not a sizing guarantee.
+_MACHINE_TYPE_TO_INSTANCE_TYPE: dict[str, str] = {
+    "e2-medium": "t3.medium",
+    "e2-standard-4": "t3.xlarge",
+    "n1-standard-1": "t3.small",
+    "n2-standard-2": "t3.large",
+}
+
+
+def _gen_aws_vpc(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_vpc" "{tf_name}" {{
+  cidr_block           = var.{tf_name}_cidr_block
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    migrated = "true"
+  }}
+}}
+'''
+
+
+def _gen_aws_subnet(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_subnet" "{tf_name}" {{
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.{tf_name}_cidr_block
+  availability_zone = var.{tf_name}_availability_zone
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    migrated = "true"
+  }}
+}}
+'''
+
+
+def _gen_aws_security_group(resource: CanonicalResource, tf_name: str) -> str:
+    attrs = resource.native_attributes
+
+    # Translate GCP firewall allow[] blocks -> AWS security-group ingress rules
+    allow = attrs.get("allow", [])
+    source_ranges = attrs.get("source_ranges", []) or ["0.0.0.0/0"]
+    cidr_hcl = ", ".join(f'"{r}"' for r in source_ranges)
+
+    ingress_blocks: list[str] = []
+    if isinstance(allow, list) and allow:
+        for rule in allow:
+            if not isinstance(rule, dict):
+                continue
+            protocol = str(rule.get("protocol", "tcp"))
+            aws_protocol = "-1" if protocol == "all" else protocol
+            ports = rule.get("ports", [])
+
+            if isinstance(ports, list) and ports:
+                for port in ports:
+                    port_str = str(port)
+                    if "-" in port_str:
+                        from_port, to_port = port_str.split("-", maxsplit=1)
+                    else:
+                        from_port = to_port = port_str
+                    ingress_blocks.append(f'''  ingress {{
+    from_port   = {from_port}
+    to_port     = {to_port}
+    protocol    = "{aws_protocol}"
+    cidr_blocks = [{cidr_hcl}]
+  }}''')
+            else:
+                ingress_blocks.append(f'''  ingress {{
+    from_port   = 0
+    to_port     = 0
+    protocol    = "{aws_protocol}"
+    cidr_blocks = [{cidr_hcl}]
+  }}''')
+    else:
+        ingress_blocks.append('''  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/8"]
+  }''')
+
+    ingress_hcl = "\n\n".join(ingress_blocks)
+
+    return f'''resource "aws_security_group" "{tf_name}" {{
+  name        = var.{tf_name}_name
+  description = "Migrated from {resource.source_type}: {resource.name}"
+  vpc_id      = aws_vpc.main.id
+
+{ingress_hcl}
+
+  egress {{
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }}
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    migrated = "true"
+  }}
+}}
+'''
+
+
+def _gen_aws_instance(resource: CanonicalResource, tf_name: str) -> str:
+    tags_hcl = (
+        "\n".join(f'    {k} = "{v}"' for k, v in resource.tags.items())
+        if resource.tags
+        else '    migrated = "true"'
+    )
+
+    return f'''resource "aws_instance" "{tf_name}" {{
+  ami           = var.{tf_name}_ami
+  instance_type = var.{tf_name}_instance_type
+
+  tags = {{
+{tags_hcl}
+  }}
+}}
+'''
+
+
+def _gen_aws_s3_bucket(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_s3_bucket" "{tf_name}" {{
+  bucket = var.{tf_name}_name
+
+  tags = {{
+    migrated = "true"
+    source   = "gcs"
+  }}
+}}
+
+resource "aws_s3_bucket_versioning" "{tf_name}" {{
+  bucket = aws_s3_bucket.{tf_name}.id
+
+  versioning_configuration {{
+    status = "Enabled"
+  }}
+}}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "{tf_name}" {{
+  bucket = aws_s3_bucket.{tf_name}.id
+
+  rule {{
+    apply_server_side_encryption_by_default {{
+      sse_algorithm = "AES256"
+    }}
+  }}
+}}
+'''
+
+
+def _gen_aws_iam_role(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_iam_role" "{tf_name}" {{
+  name = var.{tf_name}_name
+
+  # Migrated from GCP service account: {resource.name} ({resource.source_type})
+  assume_role_policy = jsonencode({{
+    Version = "2012-10-17"
+    Statement = [
+      {{
+        Action    = "sts:AssumeRole"
+        Effect    = "Allow"
+        Principal = {{
+          Service = "ec2.amazonaws.com"
+        }}
+      }}
+    ]
+  }})
+
+  tags = {{
+    migrated = "true"
+  }}
+}}
+'''
+
+
+def _gen_aws_db_instance(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_db_instance" "{tf_name}" {{
+  identifier        = var.{tf_name}_name
+  engine            = "postgres"
+  instance_class    = "db.t3.medium"
+  allocated_storage = 20
+
+  username                    = "dbadmin"
+  manage_master_user_password = true
+
+  skip_final_snapshot = true
+
+  tags = {{
+    migrated = "true"
+  }}
+}}
+'''
+
+
+def _gen_aws_lambda_function(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_lambda_function" "{tf_name}" {{
+  function_name = var.{tf_name}_name
+  runtime       = "python3.11"
+  handler       = "index.handler"
+  filename      = var.{tf_name}_filename
+  role          = aws_iam_role.main.arn
+
+  tags = {{
+    migrated = "true"
+  }}
+}}
+'''
+
+
+_AWS_GENERATORS: dict[CanonicalResourceType, Any] = {
+    CanonicalResourceType.NETWORK_VPC: _gen_aws_vpc,
+    CanonicalResourceType.NETWORK_SUBNET: _gen_aws_subnet,
+    CanonicalResourceType.NETWORK_FIREWALL_RULE: _gen_aws_security_group,
+    CanonicalResourceType.COMPUTE_INSTANCE: _gen_aws_instance,
+    CanonicalResourceType.STORAGE_OBJECT_BUCKET: _gen_aws_s3_bucket,
+    CanonicalResourceType.IAM_ROLE: _gen_aws_iam_role,
+    CanonicalResourceType.DATABASE_INSTANCE: _gen_aws_db_instance,
+    CanonicalResourceType.COMPUTE_SERVERLESS_FUNCTION: _gen_aws_lambda_function,
+}
+
+
 @dataclass(slots=True)
 class TerraformGenerator:
     target_provider: CloudProvider = CloudProvider.GCP
@@ -380,6 +610,13 @@ class TerraformGenerator:
 
         main_blocks: list[str] = []
         variable_blocks: list[str] = []
+        if self.target_provider is CloudProvider.AWS:
+            variable_blocks.append('''variable "aws_region" {
+  description = "AWS region to deploy migrated resources into"
+  type        = string
+  default     = "us-east-1"
+}
+''')
         translation_index = {tr.resource_id: tr for tr in translation.results}
 
         import_blocks: list[str] = []
@@ -404,7 +641,12 @@ class TerraformGenerator:
                 skipped_count += 1
                 continue
 
-            gen_fn = _GCP_GENERATORS.get(resource.canonical_type) if self.target_provider is CloudProvider.GCP else None
+            if self.target_provider is CloudProvider.GCP:
+                gen_fn = _GCP_GENERATORS.get(resource.canonical_type)
+            elif self.target_provider is CloudProvider.AWS:
+                gen_fn = _AWS_GENERATORS.get(resource.canonical_type)
+            else:
+                gen_fn = None
             if gen_fn is None:
                 main_blocks.append(
                     f"# UNSUPPORTED: {resource.source_type}.{resource.name} — "
@@ -426,19 +668,68 @@ class TerraformGenerator:
 }}
 ''')
 
-            if resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
-                variable_blocks.append(f'''variable "{name}_machine_type" {{
+            if self.target_provider is CloudProvider.GCP:
+                if resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
+                    variable_blocks.append(f'''variable "{name}_machine_type" {{
   description = "GCP machine type (source instance_type: {resource.native_attributes.get("instance_type", "unknown")})"
   type        = string
   default     = "e2-medium"
 }}
 ''')
 
-            if resource.canonical_type is CanonicalResourceType.IAM_ROLE:
-                variable_blocks.append(f'''variable "{name}_account_id" {{
+                if resource.canonical_type is CanonicalResourceType.IAM_ROLE:
+                    variable_blocks.append(f'''variable "{name}_account_id" {{
   description = "GCP service account ID (source: {resource.name})"
   type        = string
   default     = "{_sanitize_name(resource.name)}"
+}}
+''')
+
+            elif self.target_provider is CloudProvider.AWS:
+                if resource.canonical_type is CanonicalResourceType.NETWORK_VPC:
+                    variable_blocks.append(f'''variable "{name}_cidr_block" {{
+  description = "AWS VPC CIDR block (GCP networks have no VPC-level CIDR of their own)"
+  type        = string
+  default     = "10.0.0.0/16"
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.NETWORK_SUBNET:
+                    cidr = resource.native_attributes.get("ip_cidr_range", "10.0.1.0/24")
+                    variable_blocks.append(f'''variable "{name}_cidr_block" {{
+  description = "AWS subnet CIDR block (source ip_cidr_range: {cidr})"
+  type        = string
+  default     = "{cidr}"
+}}
+
+variable "{name}_availability_zone" {{
+  description = "AWS availability zone (source region: {resource.native_attributes.get("region", "unknown")})"
+  type        = string
+  default     = "us-east-1a"
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
+                    machine_type = str(resource.native_attributes.get("machine_type", "e2-medium"))
+                    instance_type = _MACHINE_TYPE_TO_INSTANCE_TYPE.get(machine_type, "t3.medium")
+                    variable_blocks.append(f'''variable "{name}_ami" {{
+  description = "AMI ID for the migrated instance (GCP images cannot be booted directly on EC2)"
+  type        = string
+  default     = "ami-0abcdef1234567890"
+}}
+
+variable "{name}_instance_type" {{
+  description = "EC2 instance type (source machine_type: {machine_type})"
+  type        = string
+  default     = "{instance_type}"
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.COMPUTE_SERVERLESS_FUNCTION:
+                    variable_blocks.append(f'''variable "{name}_filename" {{
+  description = "Path to the Lambda deployment package (source: Cloud Function {resource.name})"
+  type        = string
+  default     = "{name}.zip"
 }}
 ''')
 
@@ -477,7 +768,11 @@ class TerraformGenerator:
             ),
             GeneratedFile(
                 filename="terraform.tfvars",
-                content=f'# Override variables here\n# project_id = "{self.project_id}"\n',
+                content=(
+                    '# Override variables here\n# aws_region = "us-east-1"\n'
+                    if self.target_provider is CloudProvider.AWS
+                    else f'# Override variables here\n# project_id = "{self.project_id}"\n'
+                ),
                 description="Variable overrides",
             ),
         ]
@@ -506,6 +801,20 @@ class TerraformGenerator:
         logger.info("terraform_files_written", output_dir=str(output_dir), file_count=len(report.files))
 
     def _generate_providers(self) -> str:
+        if self.target_provider is CloudProvider.AWS:
+            return '''terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+'''
         return f'''provider "google" {{
   project = var.project_id
   region  = var.region
@@ -524,8 +833,19 @@ variable "region" {{
 }}
 '''
 
-    @staticmethod
-    def _generate_versions() -> str:
+    def _generate_versions(self) -> str:
+        if self.target_provider is CloudProvider.AWS:
+            return '''terraform {
+  required_version = ">= 1.5"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+'''
         return '''terraform {
   required_version = ">= 1.5"
 
@@ -539,6 +859,15 @@ variable "region" {{
 '''
 
     def _generate_backend(self) -> str:
+        if self.target_provider is CloudProvider.AWS:
+            return '''terraform {
+  backend "s3" {
+    bucket = "migration-factory-tfstate"
+    key    = "migration/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+'''
         return f'''terraform {{
   backend "gcs" {{
     bucket = "{self.project_id}-tfstate"
@@ -558,13 +887,25 @@ variable "region" {{
             if tr is None or tr.status is SupportStatus.UNSUPPORTED:
                 continue
             name = _tf_name(resource)
-            if resource.canonical_type is CanonicalResourceType.NETWORK_VPC:
-                blocks.append(f'''output "{name}_id" {{
+            if self.target_provider is CloudProvider.AWS:
+                if resource.canonical_type is CanonicalResourceType.NETWORK_VPC:
+                    blocks.append(f'''output "{name}_id" {{
+  value = aws_vpc.{name}.id
+}}
+''')
+                elif resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
+                    blocks.append(f'''output "{name}_ip" {{
+  value = aws_instance.{name}.private_ip
+}}
+''')
+            else:
+                if resource.canonical_type is CanonicalResourceType.NETWORK_VPC:
+                    blocks.append(f'''output "{name}_id" {{
   value = google_compute_network.{name}.id
 }}
 ''')
-            elif resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
-                blocks.append(f'''output "{name}_ip" {{
+                elif resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
+                    blocks.append(f'''output "{name}_ip" {{
   value = google_compute_instance.{name}.network_interface[0].network_ip
 }}
 ''')

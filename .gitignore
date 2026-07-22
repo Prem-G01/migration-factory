@@ -11,7 +11,12 @@ coverage.xml
 htmlcov/
 output/
 *-output/
+output-*/
 poc_output*.txt
+real-infra.tfstate
+real-output*/
+aws-inventory.csv
+aws-rich-inventory.csv
 dist/
 build/
 *.env

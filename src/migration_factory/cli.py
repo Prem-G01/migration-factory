@@ -2,7 +2,7 @@
 
 Commands:
     migration-factory ingest <file>          -- parse + normalize only
-    migration-factory poc <file>             -- full AWS→GCP POC pipeline
+    migration-factory poc <file>             -- full AWS<->GCP POC pipeline
     migration-factory poc <file> --target gcp|aws  -- choose target cloud
     migration-factory poc <file> --output ./out    -- write all artifacts
 """
@@ -145,6 +145,8 @@ def _poc_pipeline(
     output_dir: Path | None,
     box: object,
 ) -> None:
+    from collections import Counter
+
     from rich import box as rich_box
     from rich.panel import Panel
     from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -175,6 +177,8 @@ def _poc_pipeline(
     from migration_factory.translation.matrix import load_builtin_matrix
     from migration_factory.validation.engine import ValidationEngine
 
+    # Refined to the actual detected source once ingestion completes, below;
+    # this default only matters if the source file yields zero resources.
     source_provider = CloudProvider.AWS
     target_provider = CloudProvider.GCP if target_cloud == "gcp" else CloudProvider.AWS
 
@@ -211,6 +215,12 @@ def _poc_pipeline(
                 pipeline = IngestionPipeline(settings=get_settings())
                 ingestion = pipeline.run(source_path)
                 results["ingestion"] = ingestion
+
+                provider_counts = Counter(
+                    r.source_provider.value for r in ingestion.graph.resources.values()
+                )
+                if provider_counts:
+                    source_provider = CloudProvider(provider_counts.most_common(1)[0][0])
 
             # ── 2. Discovery / Enrichment ─────────────────────────────────
             elif key == "Discovery":
@@ -321,8 +331,9 @@ def _poc_pipeline(
     console.print()
 
     # ── Executive Summary ─────────────────────────────────────────────────
-    source_label = source_provider.value.upper()
+    source_label = source_provider.value.upper() if ingestion.graph.resources else "CLOUD"
     target_label = target_provider.value.upper()
+    direction = f"{source_label} → {target_label}"
 
     summary = Table(show_header=False, box=rich_box.ROUNDED, border_style="cyan", padding=(0, 1))
     summary.add_column("", style="dim", min_width=28)
@@ -336,7 +347,7 @@ def _poc_pipeline(
             return "green" if score <= 30 else "yellow" if score <= 60 else "red"
         return "green" if score >= 70 else "yellow" if score >= 40 else "red"
 
-    summary.add_row("Migration", f"{source_label} → {target_label}")
+    summary.add_row("Migration", direction)
     summary.add_row("Source file", str(source_path.name))
     summary.add_row("Resources discovered", str(len(ingestion.graph.resources)))
     summary.add_row("", "")
@@ -514,7 +525,9 @@ def _poc_pipeline(
 
     # ── Generated Artifacts ───────────────────────────────────────────────
     console.print()
-    art_table = Table(title="Generated Terraform (GCP Target)", box=rich_box.SIMPLE_HEAD, title_style="bold green")
+    art_table = Table(
+        title=f"Generated Terraform ({target_label} Target)", box=rich_box.SIMPLE_HEAD, title_style="bold green"
+    )
     art_table.add_column("File", min_width=20)
     art_table.add_column("Description")
     art_table.add_column("Lines", justify="right", width=6)
@@ -576,7 +589,8 @@ def _poc_pipeline(
     console.print()
     console.print(Panel.fit(
         f"[bold green]POC Complete[/bold green]  "
-        f"[dim]{len(ingestion.graph.resources)} resources · "
+        f"[dim]{direction} · "
+        f"{len(ingestion.graph.resources)} resources · "
         f"{len(plan.waves)} waves · "
         f"{plan.cutover_plan.total_downtime_minutes}min downtime · "
         f"${s.monthly_savings:,.0f}/month savings[/dim]",
