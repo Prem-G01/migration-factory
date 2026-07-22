@@ -425,52 +425,40 @@ def _gen_aws_security_group(resource: CanonicalResource, tf_name: str) -> str:
     attrs = resource.native_attributes
 
     # Translate GCP firewall allow[] blocks -> AWS security-group ingress rules
-    allow = attrs.get("allow", [])
-    source_ranges = attrs.get("source_ranges", []) or ["0.0.0.0/0"]
-    cidr_hcl = ", ".join(f'"{r}"' for r in source_ranges)
-
-    ingress_blocks: list[str] = []
-    if isinstance(allow, list) and allow:
-        for rule in allow:
+    allow_blocks = attrs.get("allow", [])
+    ingress_lines: list[str] = []
+    if isinstance(allow_blocks, list):
+        for rule in allow_blocks:
             if not isinstance(rule, dict):
                 continue
-            protocol = str(rule.get("protocol", "tcp"))
-            aws_protocol = "-1" if protocol == "all" else protocol
+            proto = rule.get("protocol", "tcp")
             ports = rule.get("ports", [])
-
-            if isinstance(ports, list) and ports:
-                for port in ports:
-                    port_str = str(port)
-                    if "-" in port_str:
-                        from_port, to_port = port_str.split("-", maxsplit=1)
-                    else:
-                        from_port = to_port = port_str
-                    ingress_blocks.append(f'''  ingress {{
-    from_port   = {from_port}
-    to_port     = {to_port}
-    protocol    = "{aws_protocol}"
-    cidr_blocks = [{cidr_hcl}]
-  }}''')
+            if proto == "all" or not ports:
+                ingress_lines.append(
+                    '  ingress {\n    from_port   = 0\n    to_port     = 0\n'
+                    '    protocol    = "-1"\n    cidr_blocks = ["0.0.0.0/0"]\n  }'
+                )
             else:
-                ingress_blocks.append(f'''  ingress {{
-    from_port   = 0
-    to_port     = 0
-    protocol    = "{aws_protocol}"
-    cidr_blocks = [{cidr_hcl}]
-  }}''')
-    else:
-        ingress_blocks.append('''  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]
-  }''')
-
-    ingress_hcl = "\n\n".join(ingress_blocks)
-
+                for port_entry in ports:
+                    port_str = str(port_entry)
+                    if "-" in port_str:
+                        from_p, to_p = port_str.split("-", maxsplit=1)
+                    else:
+                        from_p = to_p = port_str
+                    ingress_lines.append(
+                        f'  ingress {{\n    from_port   = {from_p}\n'
+                        f'    to_port     = {to_p}\n    protocol    = "{proto}"\n'
+                        f'    cidr_blocks = ["0.0.0.0/0"]\n  }}'
+                    )
+    if not ingress_lines:
+        ingress_lines.append(
+            '  ingress {\n    from_port   = 443\n    to_port     = 443\n'
+            '    protocol    = "tcp"\n    cidr_blocks = ["0.0.0.0/0"]\n  }'
+        )
+    ingress_hcl = "\n\n".join(ingress_lines)
     return f'''resource "aws_security_group" "{tf_name}" {{
   name        = var.{tf_name}_name
-  description = "Migrated from {resource.source_type}: {resource.name}"
+  description = "Migrated from GCP firewall: {resource.name}"
   vpc_id      = aws_vpc.main.id
 
 {ingress_hcl}
@@ -484,26 +472,40 @@ def _gen_aws_security_group(resource: CanonicalResource, tf_name: str) -> str:
 
   tags = {{
     Name     = var.{tf_name}_name
-    migrated = "true"
+    Migrated = "true"
   }}
 }}
 '''
 
 
 def _gen_aws_instance(resource: CanonicalResource, tf_name: str) -> str:
-    tags_hcl = (
-        "\n".join(f'    {k} = "{v}"' for k, v in resource.tags.items())
-        if resource.tags
-        else '    migrated = "true"'
-    )
+    attrs = resource.native_attributes
+    machine_type = str(attrs.get("machine_type", "e2-medium"))
+    instance_type = _map_machine_type(machine_type)
+
+    tags = resource.tags or {}
+    tag_lines = "\n".join(f'    {k} = "{v}"' for k, v in sorted(tags.items()))
+    if tag_lines:
+        tag_block = f"  tags = {{\n    Name     = var.{tf_name}_name\n    Migrated = \"true\"\n{tag_lines}\n  }}"
+    else:
+        tag_block = f'  tags = {{\n    Name     = var.{tf_name}_name\n    Migrated = "true"\n  }}'
 
     return f'''resource "aws_instance" "{tf_name}" {{
   ami           = var.{tf_name}_ami
-  instance_type = var.{tf_name}_instance_type
+  instance_type = "{instance_type}"
+  subnet_id     = aws_subnet.app.id
 
-  tags = {{
-{tags_hcl}
+  root_block_device {{
+    volume_type           = "gp3"
+    volume_size           = 20
+    delete_on_termination = true
   }}
+
+  metadata_options {{
+    http_tokens = "required"
+  }}
+
+{tag_block}
 }}
 '''
 
@@ -511,29 +513,35 @@ def _gen_aws_instance(resource: CanonicalResource, tf_name: str) -> str:
 def _gen_aws_s3_bucket(resource: CanonicalResource, tf_name: str) -> str:
     return f'''resource "aws_s3_bucket" "{tf_name}" {{
   bucket = var.{tf_name}_name
-
   tags = {{
-    migrated = "true"
-    source   = "gcs"
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp"
   }}
 }}
 
-resource "aws_s3_bucket_versioning" "{tf_name}" {{
+resource "aws_s3_bucket_versioning" "{tf_name}_versioning" {{
   bucket = aws_s3_bucket.{tf_name}.id
-
   versioning_configuration {{
     status = "Enabled"
   }}
 }}
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "{tf_name}" {{
+resource "aws_s3_bucket_server_side_encryption_configuration" "{tf_name}_sse" {{
   bucket = aws_s3_bucket.{tf_name}.id
-
   rule {{
     apply_server_side_encryption_by_default {{
       sse_algorithm = "AES256"
     }}
   }}
+}}
+
+resource "aws_s3_bucket_public_access_block" "{tf_name}_pab" {{
+  bucket                  = aws_s3_bucket.{tf_name}.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }}
 '''
 
@@ -542,56 +550,127 @@ def _gen_aws_iam_role(resource: CanonicalResource, tf_name: str) -> str:
     return f'''resource "aws_iam_role" "{tf_name}" {{
   name = var.{tf_name}_name
 
-  # Migrated from GCP service account: {resource.name} ({resource.source_type})
   assume_role_policy = jsonencode({{
     Version = "2012-10-17"
-    Statement = [
-      {{
-        Action    = "sts:AssumeRole"
-        Effect    = "Allow"
-        Principal = {{
-          Service = "ec2.amazonaws.com"
-        }}
+    Statement = [{{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = {{
+        Service = "ec2.amazonaws.com"
       }}
-    ]
+    }}]
   }})
 
   tags = {{
-    migrated = "true"
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-service-account:{resource.name}"
   }}
+}}
+
+resource "aws_iam_instance_profile" "{tf_name}_profile" {{
+  name = "${{var.{tf_name}_name}}-profile"
+  role = aws_iam_role.{tf_name}.name
 }}
 '''
 
 
 def _gen_aws_db_instance(resource: CanonicalResource, tf_name: str) -> str:
+    attrs = resource.native_attributes
+    raw_version = str(attrs.get("database_version", "POSTGRES_14"))
+    if "POSTGRES" in raw_version.upper():
+        engine = "postgres"
+        engine_version = raw_version.upper().replace("POSTGRES_", "").replace("POSTGRESQL_", "") or "14"
+    elif "MYSQL" in raw_version.upper():
+        engine = "mysql"
+        engine_version = raw_version.upper().replace("MYSQL_", "") or "8.0"
+    else:
+        engine = "postgres"
+        engine_version = "14"
+
     return f'''resource "aws_db_instance" "{tf_name}" {{
   identifier        = var.{tf_name}_name
-  engine            = "postgres"
+  engine            = "{engine}"
+  engine_version    = "{engine_version}"
   instance_class    = "db.t3.medium"
   allocated_storage = 20
+  storage_type      = "gp3"
+  storage_encrypted = true
 
-  username                    = "dbadmin"
-  manage_master_user_password = true
+  db_name  = var.{tf_name}_db_name
+  username = var.{tf_name}_username
+  password = var.{tf_name}_password
 
-  skip_final_snapshot = true
+  skip_final_snapshot     = true
+  deletion_protection     = false
+  backup_retention_period = 7
+  multi_az                = false
 
   tags = {{
-    migrated = "true"
+    Name     = var.{tf_name}_name
+    Migrated = "true"
   }}
 }}
 '''
 
 
+_GCP_TO_AWS_LAMBDA_RUNTIMES: dict[str, str] = {
+    "python39": "python3.9",
+    "python310": "python3.10",
+    "python311": "python3.11",
+    "nodejs18": "nodejs18.x",
+    "nodejs20": "nodejs20.x",
+    "go119": "provided.al2",
+    "java11": "java11",
+    "java17": "java17",
+}
+
+
 def _gen_aws_lambda_function(resource: CanonicalResource, tf_name: str) -> str:
+    attrs = resource.native_attributes
+    raw_runtime = str(attrs.get("runtime", "python311"))
+    normalized = raw_runtime.lower().replace(".", "").replace("-", "")
+    runtime = _GCP_TO_AWS_LAMBDA_RUNTIMES.get(normalized, "python3.11")
+
     return f'''resource "aws_lambda_function" "{tf_name}" {{
   function_name = var.{tf_name}_name
-  runtime       = "python3.11"
-  handler       = "index.handler"
   filename      = var.{tf_name}_filename
-  role          = aws_iam_role.main.arn
+  handler       = "index.handler"
+  runtime       = "{runtime}"
+
+  role = aws_iam_role.lambda_exec.arn
+
+  environment {{
+    variables = {{
+      MIGRATED = "true"
+      SOURCE   = "gcp-cloud-function"
+    }}
+  }}
 
   tags = {{
-    migrated = "true"
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+  }}
+}}
+'''
+
+
+def _gen_aws_elasticache(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_elasticache_replication_group" "{tf_name}" {{
+  replication_group_id = var.{tf_name}_name
+  description           = "Migrated from GCP Memorystore: {resource.name}"
+  node_type             = "cache.t3.medium"
+  num_cache_clusters    = 1
+  engine                = "redis"
+  engine_version        = "7.0"
+  port                  = 6379
+
+  at_rest_encryption_enabled = true
+  transit_encryption_enabled = true
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
   }}
 }}
 '''
@@ -605,6 +684,7 @@ _AWS_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.STORAGE_OBJECT_BUCKET: _gen_aws_s3_bucket,
     CanonicalResourceType.IAM_ROLE: _gen_aws_iam_role,
     CanonicalResourceType.DATABASE_INSTANCE: _gen_aws_db_instance,
+    CanonicalResourceType.DATABASE_CACHE: _gen_aws_elasticache,
     CanonicalResourceType.COMPUTE_SERVERLESS_FUNCTION: _gen_aws_lambda_function,
 }
 
@@ -723,18 +803,10 @@ variable "{name}_availability_zone" {{
 ''')
 
                 if resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
-                    machine_type = str(resource.native_attributes.get("machine_type", "e2-medium"))
-                    instance_type = _map_machine_type(machine_type)
                     variable_blocks.append(f'''variable "{name}_ami" {{
   description = "AMI ID for the migrated instance (GCP images cannot be booted directly on EC2)"
   type        = string
   default     = "ami-0abcdef1234567890"
-}}
-
-variable "{name}_instance_type" {{
-  description = "EC2 instance type (source machine_type: {machine_type})"
-  type        = string
-  default     = "{instance_type}"
 }}
 ''')
 
@@ -743,6 +815,27 @@ variable "{name}_instance_type" {{
   description = "Path to the Lambda deployment package (source: Cloud Function {resource.name})"
   type        = string
   default     = "{name}.zip"
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.DATABASE_INSTANCE:
+                    variable_blocks.append(f'''variable "{name}_db_name" {{
+  description = "Initial database name (source: Cloud SQL instance {resource.name})"
+  type        = string
+  default     = "appdb"
+}}
+
+variable "{name}_username" {{
+  description = "Master username for the migrated RDS instance"
+  type        = string
+  default     = "dbadmin"
+}}
+
+variable "{name}_password" {{
+  description = "Master password for the migrated RDS instance — override in terraform.tfvars, never commit a real value"
+  type        = string
+  default     = "changeme-in-tfvars"
+  sensitive   = true
 }}
 ''')
 

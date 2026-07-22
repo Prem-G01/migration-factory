@@ -12,8 +12,11 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
-from migration_factory.core.config import get_settings
+from rich.console import Console
+
+from migration_factory.core.config import Settings, get_settings
 from migration_factory.core.exceptions import MigrationFactoryError
 from migration_factory.core.logging import configure_logging, get_logger
 from migration_factory.pipeline import IngestionPipeline
@@ -65,6 +68,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "migrate: full pipeline including Terraform generation (default)."
         ),
     )
+    poc.add_argument(
+        "--analyze-only",
+        action="store_true",
+        help="Shorthand for --mode analyze (assessment/security/compliance/cost, no Terraform output).",
+    )
 
     return parser
 
@@ -85,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
 
 # ── ingest ───────────────────────────────────────────────────────────────────
 
-def _run_ingest(args: argparse.Namespace, settings: object) -> int:
+def _run_ingest(args: argparse.Namespace, settings: Settings) -> int:
     pipeline = IngestionPipeline(settings=settings)
     try:
         report = pipeline.run(args.source_path)
@@ -134,7 +142,7 @@ def _run_poc(args: argparse.Namespace, settings: object) -> int:  # noqa: ANN001
     source_path = args.source_path
     target_cloud = args.target
     output_dir = args.output
-    mode = args.mode
+    mode = "analyze" if args.analyze_only else args.mode
 
     try:
         _poc_pipeline(console, source_path, target_cloud, output_dir, box, mode=mode)
@@ -149,7 +157,7 @@ def _run_poc(args: argparse.Namespace, settings: object) -> int:  # noqa: ANN001
 
 
 def _poc_pipeline(
-    console: object,
+    console: Console,
     source_path: Path,
     target_cloud: str,
     output_dir: Path | None,
@@ -162,8 +170,6 @@ def _poc_pipeline(
     from rich.panel import Panel
     from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
     from rich.table import Table
-
-    console = console  # type: ignore[assignment]
 
     from migration_factory.assessment.engine import AssessmentEngine
     from migration_factory.assessment.extended import (
@@ -210,7 +216,7 @@ def _poc_pipeline(
     if mode != "migrate":
         stages = [(label, key) for label, key in stages if key != "Terraform Gen"]
 
-    results: dict[str, object] = {"terraform": None}
+    results: dict[str, Any] = {"terraform": None}
 
     with Progress(
         SpinnerColumn(),

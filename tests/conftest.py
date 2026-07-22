@@ -13,3 +13,8 @@ def fixtures_dir() -> Path:
 @pytest.fixture
 def sample_tfstate_path(fixtures_dir: Path) -> Path:
     return fixtures_dir / "sample_terraform.tfstate"
+
+
+@pytest.fixture
+def sample_gcp_tfstate_path(fixtures_dir: Path) -> Path:
+    return fixtures_dir / "sample_gcp.tfstate"
