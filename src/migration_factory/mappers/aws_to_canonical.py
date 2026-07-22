@@ -146,6 +146,19 @@ def _map_iam_policy(parsed: ParsedResource) -> tuple[CanonicalResourceType, str 
     return CanonicalResourceType.IAM_POLICY, "global"
 
 
+def _map_iam_role_policy_attachment(parsed: ParsedResource) -> tuple[CanonicalResourceType, str | None]:
+    # `role` holds the role name/ARN (the AWS provider schema has no `role_arn`
+    # attribute on this resource); fall back to it when `role_arn` isn't present.
+    role_arn = parsed.attributes.get("role_arn") or parsed.attributes.get("role")
+    policy_arn = parsed.attributes.get("policy_arn")
+    logger.debug(
+        "iam_role_policy_attachment_mapped",
+        role_arn=role_arn,
+        policy_arn=policy_arn,
+    )
+    return CanonicalResourceType.IAM_POLICY, "global"
+
+
 def _map_secretsmanager(parsed: ParsedResource) -> tuple[CanonicalResourceType, str | None]:
     return CanonicalResourceType.SECRETS_MANAGER, None
 
@@ -211,6 +224,7 @@ _HANDLERS: dict[str, Callable[[ParsedResource], tuple[CanonicalResourceType, str
     # IAM / Security
     "aws_iam_role": _map_iam_role,
     "aws_iam_policy": _map_iam_policy,
+    "aws_iam_role_policy_attachment": _map_iam_role_policy_attachment,
     "aws_secretsmanager_secret": _map_secretsmanager,
     "aws_acm_certificate": _map_acm,
     # Application services
