@@ -16,6 +16,7 @@ import time
 import uuid
 import zipfile
 from collections import Counter
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -143,18 +144,21 @@ def _run_pipeline(source_path: Path, target: _Target | None) -> dict[str, Any]:
 
     run_id = str(uuid.uuid4())
     duration_seconds = round(time.perf_counter() - started_at, 2)
+    created_at = datetime.now(UTC).isoformat()
 
     full_report: dict[str, Any] = {
         "run_id": run_id,
         "status": "completed",
         "mode": mode,
         "direction": direction,
+        "created_at": created_at,
         "duration_seconds": duration_seconds,
         "source_provider": source_provider.value,
         "target_provider": target_provider.value,
         "unsupported_resources": ingestion.unsupported_resources,
         "knowledge_graph": knowledge_graph,
         "translation_summary": translation.summary,
+        "translation_results": translation.results,
         "assessment": assessment,
         "security": security,
         "compliance": compliance,
@@ -171,6 +175,7 @@ def _run_pipeline(source_path: Path, target: _Target | None) -> dict[str, Any]:
         "summary": summary,
         "direction": direction,
         "mode": mode,
+        "created_at": created_at,
         "terraform_files": terraform_files,
         "html": html_report,
     }
@@ -253,7 +258,13 @@ def get_terraform(run_id: str) -> StreamingResponse:
 @app.get("/api/v1/runs")
 def list_runs() -> dict[str, Any]:
     runs = [
-        {"run_id": run_id, "direction": data["direction"], "mode": data["mode"], **data["summary"]}
+        {
+            "run_id": run_id,
+            "direction": data["direction"],
+            "mode": data["mode"],
+            "created_at": data["created_at"],
+            **data["summary"],
+        }
         for run_id, data in _RUNS.items()
     ]
     return {"runs": runs}
