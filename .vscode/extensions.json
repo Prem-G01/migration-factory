@@ -1,0 +1,15 @@
+{
+    "recommendations": [
+        "ms-python.python",
+        "ms-python.pylance",
+        "ms-python.debugpy",
+        "charliermarsh.ruff",
+        "hashicorp.terraform",
+        "bierner.markdown-preview-github-styles",
+        "yzhang.markdown-all-in-one",
+        "littlefoxteam.vscode-python-test-adapter",
+        "ms-vscode.test-adapter-converter",
+        "hediet.vscode-drawio",
+        "bpruitt-goddard.mermaid-markdown-syntax-highlighting"
+    ]
+}

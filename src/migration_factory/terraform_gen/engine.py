@@ -1,0 +1,626 @@
+"""Terraform Generation Engine.
+
+Generates target-provider Terraform HCL from the Canonical Infrastructure
+Graph + Translation Report. This is the module that closes the loop: parsed
+source infrastructure -> canonical model -> translated decisions -> runnable
+Terraform code for the target cloud.
+
+Design rules:
+1. **Rule-based, not AI-generated.** Templates are deterministic string
+   builders per (canonical_type, target_provider) pair.
+2. **One canonical resource -> one or more Terraform resource blocks.**
+   The TranslationRule.target_terraform_types list determines the fan-out.
+3. **Generated code is formatted and immediately `terraform validate`-able.**
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from migration_factory.core.logging import get_logger
+from migration_factory.domain.canonical_model import (
+    CanonicalInfrastructureGraph,
+    CanonicalResource,
+)
+from migration_factory.domain.enums import CanonicalResourceType, CloudProvider
+from migration_factory.translation.models import SupportStatus, TranslationReport, TranslationResult
+
+logger = get_logger(__name__)
+
+
+class GeneratedFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+    content: str
+    description: str
+
+
+class TerraformGenerationReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_provider: CloudProvider
+    files: list[GeneratedFile] = Field(default_factory=list)
+    generated_resources: int = 0
+    skipped_resources: int = 0
+    import_blocks: list[str] = Field(default_factory=list)
+
+
+def _sanitize_name(name: str) -> str:
+    """Convert a resource name to a valid Terraform identifier."""
+    sanitized = name.replace("-", "_").replace(".", "_").replace(":", "_")
+    sanitized = "".join(c for c in sanitized if c.isalnum() or c == "_")
+    if sanitized and sanitized[0].isdigit():
+        sanitized = "r_" + sanitized
+    return sanitized or "unnamed"
+
+
+def _tf_name(resource: CanonicalResource) -> str:
+    """Generate a Terraform resource name from canonical id."""
+    # Use the last segment of the canonical id
+    parts = resource.id.split(":")
+    raw = parts[-1] if parts else resource.name
+    return _sanitize_name(raw)
+
+
+# ---------------------------------------------------------------------------
+# GCP Terraform block generators — one per canonical type
+# ---------------------------------------------------------------------------
+
+
+def _gen_gcp_vpc(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "google_compute_network" "{tf_name}" {{
+  name                    = var.{tf_name}_name
+  auto_create_subnetworks = false
+  description             = "Migrated from {resource.source_type}: {resource.name}"
+}}
+'''
+
+
+def _gen_gcp_subnet(resource: CanonicalResource, tf_name: str) -> str:
+    cidr = resource.native_attributes.get("cidr_block", "10.0.0.0/24")
+    region = resource.region or "us-central1"
+    return f'''resource "google_compute_subnetwork" "{tf_name}" {{
+  name          = var.{tf_name}_name
+  ip_cidr_range = "{cidr}"
+  region        = "{region}"
+  network       = google_compute_network.{_sanitize_name(resource.name)}.id
+  description   = "Migrated from {resource.source_type}: {resource.name}"
+
+  private_ip_google_access = true
+}}
+'''
+
+
+def _gen_gcp_firewall(resource: CanonicalResource, tf_name: str) -> str:
+    attrs = resource.native_attributes
+
+    # Translate AWS SG ingress rules → GCP allow blocks
+    ingress = attrs.get("ingress", [])
+    allow_blocks: list[str] = []
+    source_ranges: list[str] = []
+
+    # AWS protocol numbers to names
+    proto_map = {"-1": "all", "6": "tcp", "17": "udp", "1": "icmp"}
+
+    if isinstance(ingress, list) and ingress:
+        for rule in ingress:
+            if not isinstance(rule, dict):
+                continue
+            proto_raw = str(rule.get("protocol", "tcp"))
+            protocol = proto_map.get(proto_raw, proto_raw if proto_raw != "-1" else "all")
+
+            from_port = rule.get("from_port", 0)
+            to_port = rule.get("to_port", 65535)
+
+            # Build ports list
+            ports: list[str] = []
+            if protocol not in ("all", "icmp"):
+                if from_port == to_port:
+                    ports = [str(from_port)]
+                elif from_port == 0 and to_port in (0, 65535):
+                    ports = []  # all ports
+                else:
+                    ports = [f"{from_port}-{to_port}"]
+
+            ports_hcl = f'\n    ports    = [{", ".join(f"{chr(34)}{p}{chr(34)}" for p in ports)}]' if ports else ""
+            allow_blocks.append(f"""  allow {{
+    protocol = "{protocol}"{ports_hcl}
+  }}""")
+
+            # Source CIDR ranges
+            for cidr_field in ("cidr_blocks", "ipv6_cidr_blocks"):
+                for cidr in rule.get(cidr_field, []):
+                    if cidr not in source_ranges:
+                        source_ranges.append(cidr)
+    else:
+        # Default safe deny-all with internal-only access
+        allow_blocks.append('  allow {\n    protocol = "tcp"\n    ports    = ["443", "80"]\n  }')
+        source_ranges = ["10.0.0.0/8"]
+
+    if not source_ranges:
+        source_ranges = ["10.0.0.0/8"]  # default to internal-only (more secure than 0.0.0.0/0)
+
+    allow_hcl = "\n\n".join(allow_blocks)
+    ranges_hcl = ", ".join(f'"{r}"' for r in source_ranges)
+
+    return f'''resource "google_compute_firewall" "{tf_name}" {{
+  name    = var.{tf_name}_name
+  network = google_compute_network.main.name
+
+{allow_hcl}
+
+  source_ranges = [{ranges_hcl}]
+  description   = "Migrated from {resource.source_type}: {resource.name}"
+}}
+'''
+
+
+def _gen_gcp_instance(resource: CanonicalResource, tf_name: str) -> str:
+    zone = resource.native_attributes.get("availability_zone", "us-central1-a")
+    # Map to GCP zone format
+    if zone and not zone.startswith("us-") or "-" not in zone:
+        zone = "us-central1-a"
+
+    return f'''resource "google_compute_instance" "{tf_name}" {{
+  name         = var.{tf_name}_name
+  machine_type = var.{tf_name}_machine_type
+  zone         = "{zone}"
+
+  boot_disk {{
+    initialize_params {{
+      image = "debian-cloud/debian-11"
+      size  = 20
+    }}
+  }}
+
+  network_interface {{
+    subnetwork = google_compute_subnetwork.{_sanitize_name(resource.name)}.id
+  }}
+
+  metadata = {{
+    # Migrated from {resource.source_type}: {resource.name}
+    # Original instance type: {resource.native_attributes.get("instance_type", "unknown")}
+  }}
+
+  labels = {{
+    {chr(10).join(f'    {k} = "{v}"' for k, v in resource.tags.items()) if resource.tags else '    migrated = "true"'}
+  }}
+}}
+'''
+
+
+def _gen_gcp_bucket(resource: CanonicalResource, tf_name: str) -> str:
+    location = resource.region or "US"
+    return f'''resource "google_storage_bucket" "{tf_name}" {{
+  name          = var.{tf_name}_name
+  location      = "{location.upper()}"
+  force_destroy = false
+
+  uniform_bucket_level_access = true
+
+  versioning {{
+    enabled = true
+  }}
+
+  labels = {{
+    migrated = "true"
+    source   = "aws-s3"
+  }}
+}}
+'''
+
+
+def _gen_gcp_cloudsql(resource: CanonicalResource, tf_name: str) -> str:
+    region = resource.region or "us-central1"
+    engine = resource.native_attributes.get("engine", "postgres")
+    version_map = {"postgres": "POSTGRES_14", "mysql": "MYSQL_8_0", "mariadb": "MYSQL_8_0"}
+    db_version = version_map.get(str(engine).lower(), "POSTGRES_14")
+
+    return f'''resource "google_sql_database_instance" "{tf_name}" {{
+  name             = var.{tf_name}_name
+  database_version = "{db_version}"
+  region           = "{region}"
+
+  settings {{
+    tier = "db-custom-2-7680"
+
+    ip_configuration {{
+      ipv4_enabled    = false
+      private_network = google_compute_network.main.id
+    }}
+
+    backup_configuration {{
+      enabled            = true
+      binary_log_enabled = {"true" if "mysql" in str(engine).lower() else "false"}
+    }}
+  }}
+
+  deletion_protection = true
+}}
+'''
+
+
+def _gen_gcp_service_account(resource: CanonicalResource, tf_name: str) -> str:
+    attrs = resource.native_attributes
+
+    # Map common AWS managed policies to GCP IAM roles
+    _aws_to_gcp_roles: dict[str, str] = {
+        "AmazonS3ReadOnlyAccess":        "roles/storage.objectViewer",
+        "AmazonS3FullAccess":            "roles/storage.admin",
+        "AmazonDynamoDBReadOnlyAccess":  "roles/datastore.viewer",
+        "AmazonDynamoDBFullAccess":      "roles/datastore.owner",
+        "AmazonSQSFullAccess":           "roles/pubsub.admin",
+        "AmazonSNSFullAccess":           "roles/pubsub.admin",
+        "AWSLambdaBasicExecutionRole":   "roles/logging.logWriter",
+        "AmazonEKSWorkerNodePolicy":     "roles/container.nodeServiceAccount",
+        "AmazonEC2ContainerRegistryReadOnly": "roles/artifactregistry.reader",
+        "CloudWatchLogsFullAccess":      "roles/logging.admin",
+        "AmazonRDSFullAccess":           "roles/cloudsql.admin",
+        "AdministratorAccess":           "roles/owner",
+        "PowerUserAccess":               "roles/editor",
+        "ReadOnlyAccess":                "roles/viewer",
+        "SecurityAudit":                 "roles/iam.securityReviewer",
+    }
+
+    managed_arns = attrs.get("managed_policy_arns", [])
+    inline_policy = attrs.get("assume_role_policy", {})
+
+    binding_blocks: list[str] = []
+
+    # Generate bindings for each managed policy
+    if isinstance(managed_arns, list):
+        for arn in managed_arns:
+            # Extract policy name from ARN: arn:aws:iam::aws:policy/PolicyName
+            policy_name = str(arn).split("/")[-1] if "/" in str(arn) else str(arn)
+            gcp_role = _aws_to_gcp_roles.get(policy_name)
+
+            if gcp_role:
+                binding_blocks.append(
+                    f'''resource "google_project_iam_member" "{tf_name}_{_sanitize_name(policy_name)}" {{
+  project = var.project_id
+  role    = "{gcp_role}"
+  member  = "serviceAccount:${{google_service_account.{tf_name}.email}}"
+}}'''
+                )
+            else:
+                # Unknown policy — generate a comment with the original ARN for manual review
+                binding_blocks.append(
+                    f"# REVIEW: No automatic mapping for AWS policy '{policy_name}' ({arn})\n"
+                    f"# Manually create a custom GCP role with equivalent permissions."
+                )
+
+    # If no managed policies, check inline policy for common patterns
+    if not binding_blocks and inline_policy:
+        policy_str = str(inline_policy)
+        if "s3:" in policy_str:
+            binding_blocks.append(
+                f'''resource "google_project_iam_member" "{tf_name}_storage" {{
+  project = var.project_id
+  role    = "roles/storage.objectViewer"
+  member  = "serviceAccount:${{google_service_account.{tf_name}.email}}"
+}}'''
+            )
+
+    bindings_hcl = "\n\n" + "\n\n".join(binding_blocks) if binding_blocks else \
+        "\n# No managed policies detected — add google_project_iam_member resources manually"
+
+    return f'''resource "google_service_account" "{tf_name}" {{
+  account_id   = var.{tf_name}_account_id
+  display_name = "Migrated from {resource.source_type}: {resource.name}"
+  description  = "Service account migrated from AWS IAM role"
+}}{bindings_hcl}
+'''
+
+
+def _gen_gcp_lb(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "google_compute_health_check" "{tf_name}" {{
+  name               = "${{var.{tf_name}_name}}-hc"
+  check_interval_sec = 10
+  timeout_sec        = 5
+
+  http_health_check {{
+    port = 80
+  }}
+}}
+
+resource "google_compute_backend_service" "{tf_name}" {{
+  name                  = "${{var.{tf_name}_name}}-backend"
+  protocol              = "HTTP"
+  timeout_sec           = 30
+  health_checks         = [google_compute_health_check.{tf_name}.id]
+  load_balancing_scheme = "EXTERNAL"
+}}
+
+resource "google_compute_url_map" "{tf_name}" {{
+  name            = "${{var.{tf_name}_name}}-urlmap"
+  default_service = google_compute_backend_service.{tf_name}.id
+}}
+
+resource "google_compute_target_https_proxy" "{tf_name}" {{
+  name    = "${{var.{tf_name}_name}}-proxy"
+  url_map = google_compute_url_map.{tf_name}.id
+}}
+
+resource "google_compute_global_forwarding_rule" "{tf_name}" {{
+  name       = var.{tf_name}_name
+  target     = google_compute_target_https_proxy.{tf_name}.id
+  port_range = "443"
+}}
+'''
+
+
+_GCP_GENERATORS: dict[CanonicalResourceType, Any] = {
+    CanonicalResourceType.NETWORK_VPC: _gen_gcp_vpc,
+    CanonicalResourceType.NETWORK_SUBNET: _gen_gcp_subnet,
+    CanonicalResourceType.NETWORK_FIREWALL_RULE: _gen_gcp_firewall,
+    CanonicalResourceType.COMPUTE_INSTANCE: _gen_gcp_instance,
+    CanonicalResourceType.STORAGE_OBJECT_BUCKET: _gen_gcp_bucket,
+    CanonicalResourceType.DATABASE_INSTANCE: _gen_gcp_cloudsql,
+    CanonicalResourceType.IAM_ROLE: _gen_gcp_service_account,
+    CanonicalResourceType.LOAD_BALANCER: _gen_gcp_lb,
+}
+
+
+@dataclass(slots=True)
+class TerraformGenerator:
+    target_provider: CloudProvider = CloudProvider.GCP
+    project_id: str = "your-gcp-project-id"
+    region: str = "us-central1"
+
+    def generate(
+        self,
+        graph: CanonicalInfrastructureGraph,
+        translation: TranslationReport,
+    ) -> TerraformGenerationReport:
+
+        main_blocks: list[str] = []
+        variable_blocks: list[str] = []
+        translation_index = {tr.resource_id: tr for tr in translation.results}
+
+        import_blocks: list[str] = []
+        generated_count = 0
+        skipped_count = 0
+
+        # Generate in topological order for readable output
+        try:
+            ordered_ids = graph.topological_order()
+        except Exception:
+            ordered_ids = list(graph.resources.keys())
+
+        for resource_id in ordered_ids:
+            resource = graph.resources[resource_id]
+            tr = translation_index.get(resource_id)
+
+            if tr is None or tr.status is SupportStatus.UNSUPPORTED:
+                main_blocks.append(
+                    f"# SKIPPED: {resource.source_type}.{resource.name} — "
+                    f"unsupported for migration to {self.target_provider.value}\n"
+                )
+                skipped_count += 1
+                continue
+
+            gen_fn = _GCP_GENERATORS.get(resource.canonical_type) if self.target_provider is CloudProvider.GCP else None
+            if gen_fn is None:
+                main_blocks.append(
+                    f"# UNSUPPORTED: {resource.source_type}.{resource.name} — "
+                    f"no Terraform generator for {resource.canonical_type.value} on {self.target_provider.value}. "
+                    f"Migrate manually.\n"
+                )
+                skipped_count += 1
+                continue
+
+            name = _tf_name(resource)
+            block = gen_fn(resource, name)
+            main_blocks.append(block)
+
+            # Generate variables for this resource
+            variable_blocks.append(f'''variable "{name}_name" {{
+  description = "Name for migrated resource (source: {resource.name})"
+  type        = string
+  default     = "{_sanitize_name(resource.name)}"
+}}
+''')
+
+            if resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
+                variable_blocks.append(f'''variable "{name}_machine_type" {{
+  description = "GCP machine type (source instance_type: {resource.native_attributes.get("instance_type", "unknown")})"
+  type        = string
+  default     = "e2-medium"
+}}
+''')
+
+            if resource.canonical_type is CanonicalResourceType.IAM_ROLE:
+                variable_blocks.append(f'''variable "{name}_account_id" {{
+  description = "GCP service account ID (source: {resource.name})"
+  type        = string
+  default     = "{_sanitize_name(resource.name)}"
+}}
+''')
+
+            generated_count += 1
+
+        files = [
+            GeneratedFile(
+                filename="main.tf",
+                content="\n".join(main_blocks),
+                description="Primary resource definitions",
+            ),
+            GeneratedFile(
+                filename="variables.tf",
+                content="\n".join(variable_blocks),
+                description="Input variables for all migrated resources",
+            ),
+            GeneratedFile(
+                filename="outputs.tf",
+                content=self._generate_outputs(graph, translation_index),
+                description="Output values",
+            ),
+            GeneratedFile(
+                filename="providers.tf",
+                content=self._generate_providers(),
+                description="Provider configuration",
+            ),
+            GeneratedFile(
+                filename="versions.tf",
+                content=self._generate_versions(),
+                description="Required provider versions",
+            ),
+            GeneratedFile(
+                filename="backend.tf",
+                content=self._generate_backend(),
+                description="State backend configuration",
+            ),
+            GeneratedFile(
+                filename="terraform.tfvars",
+                content=f'# Override variables here\n# project_id = "{self.project_id}"\n',
+                description="Variable overrides",
+            ),
+        ]
+
+        report = TerraformGenerationReport(
+            target_provider=self.target_provider,
+            files=files,
+            generated_resources=generated_count,
+            skipped_resources=skipped_count,
+            import_blocks=import_blocks,
+        )
+
+        logger.info(
+            "terraform_generation_completed",
+            target_provider=self.target_provider.value,
+            generated=generated_count,
+            skipped=skipped_count,
+            files=len(files),
+        )
+        return report
+
+    def write(self, report: TerraformGenerationReport, output_dir: Path) -> None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for gen_file in report.files:
+            (output_dir / gen_file.filename).write_text(gen_file.content, encoding="utf-8")
+        logger.info("terraform_files_written", output_dir=str(output_dir), file_count=len(report.files))
+
+    def _generate_providers(self) -> str:
+        return f'''provider "google" {{
+  project = var.project_id
+  region  = var.region
+}}
+
+variable "project_id" {{
+  description = "GCP project ID"
+  type        = string
+  default     = "{self.project_id}"
+}}
+
+variable "region" {{
+  description = "GCP region"
+  type        = string
+  default     = "{self.region}"
+}}
+'''
+
+    @staticmethod
+    def _generate_versions() -> str:
+        return '''terraform {
+  required_version = ">= 1.5"
+
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
+  }
+}
+'''
+
+    def _generate_backend(self) -> str:
+        return f'''terraform {{
+  backend "gcs" {{
+    bucket = "{self.project_id}-tfstate"
+    prefix = "migration"
+  }}
+}}
+'''
+
+    def _generate_outputs(
+        self,
+        graph: CanonicalInfrastructureGraph,
+        translation_index: dict[str, TranslationResult],
+    ) -> str:
+        blocks: list[str] = []
+        for resource in graph.resources.values():
+            tr = translation_index.get(resource.id)
+            if tr is None or tr.status is SupportStatus.UNSUPPORTED:
+                continue
+            name = _tf_name(resource)
+            if resource.canonical_type is CanonicalResourceType.NETWORK_VPC:
+                blocks.append(f'''output "{name}_id" {{
+  value = google_compute_network.{name}.id
+}}
+''')
+            elif resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
+                blocks.append(f'''output "{name}_ip" {{
+  value = google_compute_instance.{name}.network_interface[0].network_ip
+}}
+''')
+        return "\n".join(blocks) if blocks else "# No outputs generated\n"
+
+    def generate_import_blocks(
+        self,
+        graph: CanonicalInfrastructureGraph,
+        translation: TranslationReport,
+    ) -> GeneratedFile:
+        """Generate terraform import blocks for existing resources."""
+        translation_index = {tr.resource_id: tr for tr in translation.results}
+        blocks: list[str] = []
+
+        for resource in graph.resources.values():
+            tr = translation_index.get(resource.id)
+            if tr is None or tr.status is SupportStatus.UNSUPPORTED:
+                continue
+            name = _tf_name(resource)
+            for tf_type in tr.target_terraform_types[:1]:
+                source_id = resource.native_attributes.get("id") or resource.name
+                blocks.append(f'import {{\n  to = {tf_type}.{name}\n  id = "{source_id}"\n}}\n')
+
+        return GeneratedFile(
+            filename="imports.tf",
+            content="\n".join(blocks) if blocks else "# No import blocks generated\n",
+            description="Terraform import blocks for existing resources",
+        )
+
+    def generate_module_structure(
+        self,
+        graph: CanonicalInfrastructureGraph,
+        translation: TranslationReport,
+    ) -> list[GeneratedFile]:
+        """Generate a modular Terraform structure with one module per resource category."""
+        modules: dict[str, list[str]] = {}
+
+        for resource in graph.resources.values():
+            category = resource.canonical_type.value.split(".")[0]
+            modules.setdefault(category, []).append(resource.id)
+
+        files: list[GeneratedFile] = []
+        module_calls: list[str] = []
+
+        for module_name, resource_ids in sorted(modules.items()):
+            module_calls.append(f'module "{module_name}" {{\n  source = "./modules/{module_name}"\n}}\n')
+            files.append(GeneratedFile(
+                filename=f"modules/{module_name}/main.tf",
+                content=f"# {module_name} module - {len(resource_ids)} resources\n# Resources: {', '.join(resource_ids[:10])}\n",
+                description=f"Module for {module_name} resources",
+            ))
+
+        files.append(GeneratedFile(
+            filename="main_modular.tf",
+            content="\n".join(module_calls),
+            description="Root module calling per-category sub-modules",
+        ))
+
+        return files

@@ -1,0 +1,509 @@
+{
+  "matrix_version": "2.0.0",
+  "source_provider": "aws",
+  "target_provider": "gcp",
+  "rules": [
+    {
+      "canonical_type": "network.vpc",
+      "target_service": "VPC Network",
+      "target_terraform_types": [
+        "google_compute_network"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "GCP VPC networks are global; the AWS VPC-level CIDR block has no direct equivalent and CIDR planning moves to subnet level",
+        "Set auto_create_subnetworks=false to mirror AWS's explicit-subnet model"
+      ],
+      "manual_actions": [],
+      "rationale": "AWS VPC and GCP VPC Network serve the same isolation-boundary role; the structural difference (regional vs global scope) is handled by pushing CIDR ownership down to subnets, which the subnet rule covers.",
+      "complexity_weight": 3
+    },
+    {
+      "canonical_type": "network.subnet",
+      "target_service": "Subnetwork",
+      "target_terraform_types": [
+        "google_compute_subnetwork"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "GCP subnets are regional, not zonal: map the AWS availability zone to its parent region",
+        "Enable private_ip_google_access where instances previously used AWS VPC endpoints for service access"
+      ],
+      "manual_actions": [],
+      "rationale": "Direct conceptual equivalent. Regional (GCP) vs zonal (AWS) scope typically REDUCES subnet count in the target, which is a simplification rather than a risk.",
+      "complexity_weight": 3
+    },
+    {
+      "canonical_type": "network.firewall_rule",
+      "target_service": "VPC Firewall Rules",
+      "target_terraform_types": [
+        "google_compute_firewall"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "AWS security groups are instance-attached and implicitly deny-all; GCP firewall rules are VPC-level and target instances via network tags or service accounts \u2014 each SG becomes one or more tagged rules",
+        "AWS SG egress rules must be modeled as explicit GCP egress rules (GCP default allows egress; AWS SGs constrain it)"
+      ],
+      "manual_actions": [
+        "Review the generated tag/service-account targeting scheme: SG-to-SG references (source_security_group_id) have no direct GCP equivalent and must be re-expressed as tag-to-tag rules"
+      ],
+      "rationale": "Both enforce L3/L4 network policy, but the attachment model differs fundamentally (per-instance stateful groups vs network-level tagged rules). Automatable for simple CIDR-based rules; SG-to-SG reference graphs need human review, hence PARTIAL.",
+      "complexity_weight": 6
+    },
+    {
+      "canonical_type": "compute.instance",
+      "target_service": "Compute Engine",
+      "target_terraform_types": [
+        "google_compute_instance"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "AMIs cannot be used directly: rebuild via image pipeline or import with Migrate to Virtual Machines",
+        "Map instance types (e.g. t3.medium -> e2-medium) by vCPU/memory profile",
+        "AWS user_data becomes GCP startup-script metadata",
+        "Instance profile (IAM role attachment) becomes an attached service account"
+      ],
+      "manual_actions": [],
+      "rationale": "VM-to-VM is the most mechanically translatable workload class. Image conversion is solved tooling (M2VM), and machine-type mapping is a lookup table \u2014 differences are numerous but each is individually automatable.",
+      "complexity_weight": 5
+    },
+    {
+      "canonical_type": "storage.object_bucket",
+      "target_service": "Cloud Storage",
+      "target_terraform_types": [
+        "google_storage_bucket"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "Bucket names are globally unique in both clouds but the namespaces are separate: verify target name availability or apply a rename convention",
+        "S3 bucket policies and ACLs must be re-expressed as Cloud Storage IAM bindings",
+        "S3 storage classes map to GCS classes (STANDARD/NEARLINE/COLDLINE/ARCHIVE)"
+      ],
+      "manual_actions": [],
+      "rationale": "Object storage semantics are near-identical between S3 and GCS; Storage Transfer Service handles data movement natively. Access-policy translation is rule-driven (S3 policy JSON -> IAM bindings).",
+      "complexity_weight": 4
+    },
+    {
+      "canonical_type": "database.instance",
+      "target_service": "Cloud SQL",
+      "target_terraform_types": [
+        "google_sql_database_instance"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "Verify engine/version parity: RDS engine versions do not always have a matching Cloud SQL version",
+        "Cloud SQL private IP requires Private Service Access (a service networking connection + reserved peering range on the VPC) \u2014 this is an additional dependency that does not exist in the AWS source",
+        "RDS parameter groups become Cloud SQL database flags (not all parameters have equivalents)"
+      ],
+      "manual_actions": [
+        "Plan the data migration itself (Database Migration Service or dump/restore) including a cutover window \u2014 infrastructure translation does not move data"
+      ],
+      "rationale": "Managed-SQL to managed-SQL is conceptually clean but operationally the highest-risk resource class: it carries state, requires a networking prerequisite (PSA) absent from the source model, and needs a data-migration plan outside Terraform's scope. PARTIAL, not SUPPORTED, precisely because the infrastructure translation alone is insufficient.",
+      "complexity_weight": 8
+    },
+    {
+      "canonical_type": "iam.role",
+      "target_service": "Service Account + IAM Bindings",
+      "target_terraform_types": [
+        "google_service_account",
+        "google_project_iam_member"
+      ],
+      "status": "manual",
+      "required_changes": [
+        "An AWS IAM role (trust policy + attached permission policies) decomposes into a GCP service account plus project/resource-level IAM bindings",
+        "AWS managed policies have no 1:1 GCP predefined-role equivalents; each policy's effective permissions must be mapped to the nearest predefined role or a custom role"
+      ],
+      "manual_actions": [
+        "Security review of every translated role: permission models differ enough (resource-level conditions, service-specific actions) that automated mapping risks silent privilege escalation or breakage",
+        "Redesign trust relationships: AWS AssumeRole patterns become service account impersonation or Workload Identity Federation"
+      ],
+      "rationale": "IAM is where the two clouds' models diverge most. Mechanical translation is possible for trivial roles but dangerous at scale \u2014 an over-permissive mapping is a security incident, an under-permissive one is an outage. MANUAL by policy: the platform proposes, a human approves.",
+      "complexity_weight": 9
+    },
+    {
+      "canonical_type": "load_balancer",
+      "target_service": "Cloud Load Balancing",
+      "target_terraform_types": [
+        "google_compute_global_forwarding_rule",
+        "google_compute_target_https_proxy",
+        "google_compute_url_map",
+        "google_compute_backend_service",
+        "google_compute_health_check"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "One AWS ALB fans out to five GCP resources (forwarding rule, target proxy, URL map, backend service, health check) \u2014 this is a 1:N translation",
+        "AWS NLB maps to GCP passthrough Network Load Balancer instead of the HTTPS stack; the load_balancer_type native attribute determines which target stack applies",
+        "ACM certificates become Google-managed or self-managed SSL certificates on the target proxy"
+      ],
+      "manual_actions": [
+        "Validate listener/target-group rules against the generated URL map: complex ALB routing rules (header/query conditions) may need restructuring"
+      ],
+      "rationale": "Functionally equivalent capability, structurally very different composition. The 1:N fan-out is fully rule-expressible, but routing-rule fidelity for complex ALB configurations warrants human validation, hence PARTIAL.",
+      "complexity_weight": 7
+    },
+    {
+      "canonical_type": "network.nat_gateway",
+      "target_service": "Cloud NAT",
+      "target_terraform_types": [
+        "google_compute_router_nat",
+        "google_compute_router"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "Cloud NAT is router-based; one NAT config per Cloud Router vs one NAT gateway per AZ in AWS",
+        "Elastic IP allocation model differs: Cloud NAT auto-allocates or uses reserved IPs"
+      ],
+      "manual_actions": [],
+      "rationale": "Both provide managed NAT for private instances. GCP Cloud NAT is regional and router-attached vs AWS per-AZ NAT gateways, which typically reduces the resource count.",
+      "complexity_weight": 4
+    },
+    {
+      "canonical_type": "network.vpn",
+      "target_service": "Cloud VPN",
+      "target_terraform_types": [
+        "google_compute_vpn_gateway",
+        "google_compute_vpn_tunnel"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "Tunnel configuration parameters (IKE version, shared secret, BGP config) must be re-established",
+        "HA VPN on GCP uses 2 tunnels per gateway interface vs AWS VPN with 2 tunnels per connection"
+      ],
+      "manual_actions": [
+        "Coordinate VPN cutover with on-premises network team to avoid connectivity gaps"
+      ],
+      "rationale": "IPsec VPN is standardized across clouds. Configuration differs but the protocol is the same, making this a well-understood migration path.",
+      "complexity_weight": 5
+    },
+    {
+      "canonical_type": "network.peering",
+      "target_service": "VPC Network Peering",
+      "target_terraform_types": [
+        "google_compute_network_peering"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "GCP peering is bi-directional by configuration; AWS requires peering on both sides separately",
+        "Peering across organizations requires additional IAM permissions"
+      ],
+      "manual_actions": [],
+      "rationale": "VPC peering is conceptually identical. The bi-directional nature of GCP peering simplifies setup compared to AWS.",
+      "complexity_weight": 3
+    },
+    {
+      "canonical_type": "network.route_table",
+      "target_service": "VPC Routes",
+      "target_terraform_types": [
+        "google_compute_route"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "GCP routes are VPC-level resources, not subnet-associated route tables as in AWS",
+        "Each AWS route table entry becomes a separate google_compute_route resource"
+      ],
+      "manual_actions": [],
+      "rationale": "Route semantics are equivalent; the association model differs (VPC-level vs subnet-level) but the translation is mechanical.",
+      "complexity_weight": 3
+    },
+    {
+      "canonical_type": "compute.serverless_function",
+      "target_service": "Cloud Functions / Cloud Run",
+      "target_terraform_types": [
+        "google_cloudfunctions2_function"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "Lambda layers have no direct equivalent; bundle dependencies into the deployment package",
+        "Lambda@Edge becomes Cloud Run with custom domains or Cloud CDN integration",
+        "Runtime-specific: Lambda runtimes map to Cloud Functions runtimes but version availability differs",
+        "Environment variables and secrets must be re-mapped to GCP Secret Manager references"
+      ],
+      "manual_actions": [
+        "Review and test function code for AWS SDK calls that need replacement with GCP client libraries",
+        "Validate event source mappings: S3->GCS triggers, SNS->Pub/Sub triggers, API GW->Cloud Endpoints"
+      ],
+      "rationale": "FaaS-to-FaaS is conceptually clean but implementation details diverge significantly: event sources, runtime versions, deployment packaging, and cold start characteristics all differ. PARTIAL because infrastructure translation alone does not guarantee functional equivalence.",
+      "complexity_weight": 7
+    },
+    {
+      "canonical_type": "compute.container_cluster",
+      "target_service": "Google Kubernetes Engine (GKE)",
+      "target_terraform_types": [
+        "google_container_cluster",
+        "google_container_node_pool"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "EKS add-ons (VPC CNI, CoreDNS, kube-proxy) become GKE-managed components",
+        "Node group configurations map to GKE node pools with GCE machine types",
+        "IAM for service accounts: IRSA (EKS) maps to Workload Identity (GKE)"
+      ],
+      "manual_actions": [
+        "Migrate Kubernetes manifests: check for AWS-specific annotations, storage classes, and ingress controllers",
+        "Re-establish CI/CD pipeline to target GKE cluster"
+      ],
+      "rationale": "Both are managed Kubernetes. The control plane is equivalent; differences are in node management, networking (VPC-native vs overlay), and IAM integration. Manifests are mostly portable but AWS-specific annotations need review.",
+      "complexity_weight": 8
+    },
+    {
+      "canonical_type": "compute.container_service",
+      "target_service": "Cloud Run",
+      "target_terraform_types": [
+        "google_cloud_run_v2_service"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "ECS task definitions map to Cloud Run service specifications",
+        "ECS service discovery becomes Cloud Run internal URLs or Service Directory",
+        "Fargate launch type maps naturally to Cloud Run serverless; EC2 launch type needs GKE instead"
+      ],
+      "manual_actions": [
+        "Review container images for AWS SDK dependencies",
+        "Reconfigure service mesh and load balancer integrations"
+      ],
+      "rationale": "ECS/Fargate to Cloud Run is a good fit for stateless HTTP workloads. Stateful or non-HTTP ECS tasks should target GKE instead of Cloud Run.",
+      "complexity_weight": 7
+    },
+    {
+      "canonical_type": "storage.block_volume",
+      "target_service": "Persistent Disk",
+      "target_terraform_types": [
+        "google_compute_disk"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "EBS volume types map to PD types: gp3->pd-balanced, io2->pd-ssd, st1->pd-standard",
+        "Snapshot schedules must be recreated as GCP resource policies"
+      ],
+      "manual_actions": [],
+      "rationale": "Block storage semantics are nearly identical. Volume type mapping is a lookup table. Data migration uses disk image import.",
+      "complexity_weight": 3
+    },
+    {
+      "canonical_type": "storage.file_system",
+      "target_service": "Filestore",
+      "target_terraform_types": [
+        "google_filestore_instance"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "EFS performance modes (general/maxIO) map to Filestore tiers (BASIC/HIGH_SCALE)",
+        "EFS access points have no direct Filestore equivalent; use NFS export options instead",
+        "EFS lifecycle policies must be recreated manually"
+      ],
+      "manual_actions": [
+        "Plan data migration: no native cross-cloud file system sync; use rsync or a transfer appliance"
+      ],
+      "rationale": "Both are managed NFS but feature sets diverge: EFS is elastic and serverless, Filestore is provisioned capacity. Sizing decisions required.",
+      "complexity_weight": 6
+    },
+    {
+      "canonical_type": "database.nosql",
+      "target_service": "Firestore / Bigtable",
+      "target_terraform_types": [
+        "google_firestore_database"
+      ],
+      "status": "manual",
+      "required_changes": [
+        "DynamoDB data model (partition key + sort key) does not map 1:1 to Firestore document model",
+        "DynamoDB Streams become Firestore real-time listeners or Change Streams",
+        "GSI/LSI concepts do not exist in Firestore; query patterns must be redesigned"
+      ],
+      "manual_actions": [
+        "Redesign data model: DynamoDB key-value patterns require rethinking for Firestore document hierarchy or Bigtable row-key design",
+        "Rewrite application data access layer: DynamoDB SDK calls must be replaced with Firestore/Bigtable client libraries",
+        "Plan and execute data migration with schema transformation"
+      ],
+      "rationale": "NoSQL-to-NoSQL is the highest-risk database migration: data models are fundamentally incompatible. DynamoDB is key-value with optional document; Firestore is document-hierarchical; Bigtable is wide-column. MANUAL because the infrastructure translation is the easy part \u2014 the application changes dominate.",
+      "complexity_weight": 10
+    },
+    {
+      "canonical_type": "database.cache",
+      "target_service": "Memorystore",
+      "target_terraform_types": [
+        "google_redis_instance"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "ElastiCache Redis maps directly to Memorystore for Redis",
+        "ElastiCache Memcached maps to Memorystore for Memcached",
+        "Cluster mode configuration and shard count must be re-specified"
+      ],
+      "manual_actions": [],
+      "rationale": "Managed Redis/Memcached is semantically identical across clouds. Configuration parameters differ but the protocol is the same \u2014 applications reconnect without code changes.",
+      "complexity_weight": 4
+    },
+    {
+      "canonical_type": "iam.policy",
+      "target_service": "IAM Custom Role",
+      "target_terraform_types": [
+        "google_project_iam_custom_role"
+      ],
+      "status": "manual",
+      "required_changes": [
+        "AWS IAM policy actions must be mapped to GCP IAM permissions (different namespace and granularity)",
+        "Resource-level conditions differ fundamentally between AWS and GCP IAM"
+      ],
+      "manual_actions": [
+        "Security review of every translated policy: AWS and GCP permission models are not isomorphic"
+      ],
+      "rationale": "IAM policies are the most security-sensitive translation in the platform. Automated mapping risks silent privilege escalation. MANUAL by design.",
+      "complexity_weight": 9
+    },
+    {
+      "canonical_type": "secrets.manager",
+      "target_service": "Secret Manager",
+      "target_terraform_types": [
+        "google_secret_manager_secret",
+        "google_secret_manager_secret_version"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "Secret values must be migrated securely (never in Terraform state)",
+        "Rotation policies must be reconfigured",
+        "IAM access policies must be re-expressed as GCP Secret Manager IAM bindings"
+      ],
+      "manual_actions": [
+        "Securely transfer secret values outside of Terraform using a migration script with appropriate access controls"
+      ],
+      "rationale": "Secrets management semantics are very similar across clouds. The infrastructure (secret resource + IAM) translates cleanly; the secret values themselves require secure out-of-band migration.",
+      "complexity_weight": 5
+    },
+    {
+      "canonical_type": "security.certificate",
+      "target_service": "Certificate Manager",
+      "target_terraform_types": [
+        "google_certificate_manager_certificate"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "ACM certificates become Google-managed or uploaded certificates",
+        "DNS validation records must be recreated in Cloud DNS"
+      ],
+      "manual_actions": [],
+      "rationale": "Certificate management is functionally equivalent. Google-managed certificates handle auto-renewal similarly to ACM.",
+      "complexity_weight": 3
+    },
+    {
+      "canonical_type": "cdn.distribution",
+      "target_service": "Cloud CDN",
+      "target_terraform_types": [
+        "google_compute_backend_bucket",
+        "google_compute_url_map"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "CloudFront behaviors map to URL map path rules",
+        "Lambda@Edge functions require replacement with Cloud Run or Cloud Functions",
+        "Origin access identity becomes signed URLs or IAM-based access"
+      ],
+      "manual_actions": [
+        "Review and test cache invalidation workflows",
+        "Validate custom error pages and redirect rules"
+      ],
+      "rationale": "CDN functionality is equivalent but configuration models differ significantly. Simple static-asset distributions translate cleanly; complex edge-compute configurations need manual work.",
+      "complexity_weight": 6
+    },
+    {
+      "canonical_type": "dns.zone",
+      "target_service": "Cloud DNS",
+      "target_terraform_types": [
+        "google_dns_managed_zone"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "NS records at the registrar must be updated to point to Cloud DNS name servers",
+        "Route53 health checks become GCP health checks with routing policies"
+      ],
+      "manual_actions": [
+        "Coordinate DNS cutover to minimize resolution disruption"
+      ],
+      "rationale": "DNS zone management is semantically identical. The zone transfer is mechanical; the cutover is operational.",
+      "complexity_weight": 3
+    },
+    {
+      "canonical_type": "dns.record",
+      "target_service": "Cloud DNS Records",
+      "target_terraform_types": [
+        "google_dns_record_set"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "Route53 alias records become standard A/AAAA records pointing to GCP resource IPs",
+        "Weighted/latency routing policies require Traffic Director or external DNS"
+      ],
+      "manual_actions": [],
+      "rationale": "Standard DNS records are protocol-level identical. Advanced routing features (weighted, geolocation) may need alternative implementations.",
+      "complexity_weight": 2
+    },
+    {
+      "canonical_type": "messaging.topic",
+      "target_service": "Pub/Sub Topic",
+      "target_terraform_types": [
+        "google_pubsub_topic"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "SNS subscriptions become Pub/Sub subscriptions",
+        "SNS message filtering maps to Pub/Sub subscription filters",
+        "SNS SMS/email delivery requires separate GCP services"
+      ],
+      "manual_actions": [],
+      "rationale": "Pub/sub messaging semantics are near-identical. SNS topics map 1:1 to Pub/Sub topics; subscription types differ but cover the same use cases.",
+      "complexity_weight": 3
+    },
+    {
+      "canonical_type": "messaging.queue",
+      "target_service": "Cloud Tasks / Pub/Sub",
+      "target_terraform_types": [
+        "google_cloud_tasks_queue"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "SQS standard queues map to Pub/Sub pull subscriptions",
+        "SQS FIFO queues require Cloud Tasks with ordering or Pub/Sub ordering keys",
+        "Dead letter queue configuration differs"
+      ],
+      "manual_actions": [
+        "Evaluate whether Cloud Tasks or Pub/Sub pull subscription better fits each queue usage pattern"
+      ],
+      "rationale": "Queue semantics partially overlap: simple work queues translate well, but FIFO ordering guarantees and exactly-once processing have different mechanisms on GCP.",
+      "complexity_weight": 5
+    },
+    {
+      "canonical_type": "monitoring.alarm",
+      "target_service": "Cloud Monitoring Alert Policy",
+      "target_terraform_types": [
+        "google_monitoring_alert_policy"
+      ],
+      "status": "partial",
+      "required_changes": [
+        "CloudWatch metric namespaces map to GCP monitoring metric types",
+        "Alarm actions (SNS) become notification channels (Pub/Sub, email, PagerDuty)",
+        "Metric math expressions may need rewriting"
+      ],
+      "manual_actions": [
+        "Validate alert thresholds against GCP metric semantics, which may report differently than CloudWatch"
+      ],
+      "rationale": "Alerting concepts are equivalent but metric namespaces and evaluation semantics differ. Threshold values may need recalibration.",
+      "complexity_weight": 5
+    },
+    {
+      "canonical_type": "monitoring.log_group",
+      "target_service": "Cloud Logging",
+      "target_terraform_types": [
+        "google_logging_project_bucket_config"
+      ],
+      "status": "supported",
+      "required_changes": [
+        "CloudWatch Log Groups become Cloud Logging log buckets or default _Default bucket",
+        "Log retention policies must be reconfigured",
+        "Metric filters become log-based metrics in Cloud Monitoring"
+      ],
+      "manual_actions": [],
+      "rationale": "Centralized logging is functionally equivalent. GCP Cloud Logging auto-ingests from GCE/GKE; explicit log group creation is less common than in AWS.",
+      "complexity_weight": 3
+    }
+  ]
+}

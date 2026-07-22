@@ -1,0 +1,115 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "▶ Run POC (AWS → GCP)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "migration_factory.cli",
+            "args": [
+                "poc",
+                "tests/fixtures/sample_terraform.tfstate",
+                "--target", "gcp",
+                "--output", "./output"
+            ],
+            "env": {
+                "MF_LOGGING__FORMAT": "console",
+                "MF_LOGGING__LEVEL": "INFO"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "▶ Run POC (GCP → AWS)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "migration_factory.cli",
+            "args": [
+                "poc",
+                "tests/fixtures/sample_terraform.tfstate",
+                "--target", "aws",
+                "--output", "./output-aws"
+            ],
+            "env": {
+                "MF_LOGGING__FORMAT": "console",
+                "MF_LOGGING__LEVEL": "INFO"
+            },
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "▶ Run POC (no color)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "migration_factory.cli",
+            "args": [
+                "poc",
+                "tests/fixtures/sample_terraform.tfstate",
+                "--target", "gcp",
+                "--output", "./output",
+                "--no-color"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "🧪 Run All Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-v", "--tb=short"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "🧪 Run Tests with Coverage",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-v",
+                "--cov=migration_factory",
+                "--cov-report=html",
+                "--tb=short"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "🧪 Test: Assessment Engine",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-v", "tests/unit/test_assessment.py"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "🧪 Test: Translation Engine",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-v", "tests/unit/test_translation.py"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "🧪 Test: Security Engine",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-v", "tests/unit/test_security_engine.py"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "🧪 Test: Terraform Generator",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-v", "tests/unit/test_terraform_gen.py"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "🐛 Debug: Current Test File",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-v", "${file}"],
+            "console": "integratedTerminal"
+        }
+    ]
+}
