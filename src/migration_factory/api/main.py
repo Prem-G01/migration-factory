@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from migration_factory.assessment.engine import AssessmentEngine
@@ -44,6 +45,12 @@ app = FastAPI(
     title="Migration Factory API",
     version="2.0.3",
     description="REST API for the AI-Powered Multi-Cloud Infrastructure Migration Factory",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 _Target = Literal["gcp", "aws", "analyze_only"]
