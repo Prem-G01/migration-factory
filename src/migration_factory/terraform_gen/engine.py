@@ -372,12 +372,25 @@ _GCP_GENERATORS: dict[CanonicalResourceType, Any] = {
 
 # GCP machine types have no formal vCPU/memory equivalence table on the AWS
 # side within this POC; this is a pragmatic lookup, not a sizing guarantee.
-_MACHINE_TYPE_TO_INSTANCE_TYPE: dict[str, str] = {
+_GCP_TO_AWS_MACHINE_TYPES: dict[str, str] = {
+    "e2-micro": "t3.micro",
+    "e2-small": "t3.small",
     "e2-medium": "t3.medium",
+    "e2-standard-2": "t3.large",
     "e2-standard-4": "t3.xlarge",
+    "e2-standard-8": "t3.2xlarge",
     "n1-standard-1": "t3.small",
+    "n1-standard-2": "t3.medium",
+    "n1-standard-4": "t3.xlarge",
     "n2-standard-2": "t3.large",
+    "n2-standard-4": "t3.xlarge",
+    "c2-standard-4": "c5.xlarge",
+    "c2-standard-8": "c5.2xlarge",
 }
+
+
+def _map_machine_type(gcp_machine_type: str) -> str:
+    return _GCP_TO_AWS_MACHINE_TYPES.get(gcp_machine_type, "t3.medium")
 
 
 def _gen_aws_vpc(resource: CanonicalResource, tf_name: str) -> str:
@@ -711,7 +724,7 @@ variable "{name}_availability_zone" {{
 
                 if resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
                     machine_type = str(resource.native_attributes.get("machine_type", "e2-medium"))
-                    instance_type = _MACHINE_TYPE_TO_INSTANCE_TYPE.get(machine_type, "t3.medium")
+                    instance_type = _map_machine_type(machine_type)
                     variable_blocks.append(f'''variable "{name}_ami" {{
   description = "AMI ID for the migrated instance (GCP images cannot be booted directly on EC2)"
   type        = string

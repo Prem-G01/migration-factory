@@ -56,6 +56,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable rich terminal colors",
     )
+    poc.add_argument(
+        "--mode",
+        choices=["analyze", "migrate"],
+        default="migrate",
+        help=(
+            "analyze: assessment, security, compliance, cost only — no Terraform output. "
+            "migrate: full pipeline including Terraform generation (default)."
+        ),
+    )
 
     return parser
 
@@ -125,9 +134,10 @@ def _run_poc(args: argparse.Namespace, settings: object) -> int:  # noqa: ANN001
     source_path = args.source_path
     target_cloud = args.target
     output_dir = args.output
+    mode = args.mode
 
     try:
-        _poc_pipeline(console, source_path, target_cloud, output_dir, box)
+        _poc_pipeline(console, source_path, target_cloud, output_dir, box, mode=mode)
     except MigrationFactoryError as exc:
         console.print(f"\n[bold red]ERROR:[/bold red] {exc}")
         return 1
@@ -144,6 +154,7 @@ def _poc_pipeline(
     target_cloud: str,
     output_dir: Path | None,
     box: object,
+    mode: str = "migrate",
 ) -> None:
     from collections import Counter
 
@@ -196,8 +207,10 @@ def _poc_pipeline(
         ("🏗️   Generating Terraform",         "Terraform Gen"),
         ("📄  Generating reports",            "Reporting"),
     ]
+    if mode != "migrate":
+        stages = [(label, key) for label, key in stages if key != "Terraform Gen"]
 
-    results: dict[str, object] = {}
+    results: dict[str, object] = {"terraform": None}
 
     with Progress(
         SpinnerColumn(),
@@ -235,8 +248,17 @@ def _poc_pipeline(
             # ── 4. Translation ────────────────────────────────────────────
             elif key == "Translation":
                 ingestion = results["ingestion"]
-                matrix = load_builtin_matrix(source_provider, target_provider)
-                results["translation"] = TranslationEngine(matrix=matrix).translate(ingestion.graph)
+                if source_provider is target_provider:
+                    # Same-cloud analysis (e.g. --mode analyze with no real
+                    # migration target): no capability matrix exists for a
+                    # provider mapped to itself, so skip straight to an
+                    # identity report instead of erroring.
+                    results["translation"] = TranslationEngine.build_identity_report(
+                        ingestion.graph, source_provider
+                    )
+                else:
+                    matrix = load_builtin_matrix(source_provider, target_provider)
+                    results["translation"] = TranslationEngine(matrix=matrix).translate(ingestion.graph)
 
             # ── 5. Assessment ─────────────────────────────────────────────
             elif key == "Assessment":
@@ -324,7 +346,6 @@ def _poc_pipeline(
     finops = results["finops"]
     plan = results["plan"]
     rollback = results["rollback"]
-    terraform = results["terraform"]
     readiness = results["readiness"]
     kg = results["kg"]
 
@@ -524,26 +545,27 @@ def _poc_pipeline(
     console.print(kg_table)
 
     # ── Generated Artifacts ───────────────────────────────────────────────
-    console.print()
-    art_table = Table(
-        title=f"Generated Terraform ({target_label} Target)", box=rich_box.SIMPLE_HEAD, title_style="bold green"
-    )
-    art_table.add_column("File", min_width=20)
-    art_table.add_column("Description")
-    art_table.add_column("Lines", justify="right", width=6)
-    for gf in terraform.files:
-        art_table.add_row(
-            f"[green]{gf.filename}[/]",
-            gf.description,
-            str(len(gf.content.split('\n')))
+    if terraform := results.get("terraform"):
+        console.print()
+        art_table = Table(
+            title=f"Generated Terraform ({target_label} Target)", box=rich_box.SIMPLE_HEAD, title_style="bold green"
         )
-    art_table.add_row("", "", "")
-    art_table.add_row(
-        f"[green]{terraform.generated_resources}[/] resources generated",
-        f"[dim]{terraform.skipped_resources} skipped (manual/unsupported)[/]",
-        ""
-    )
-    console.print(art_table)
+        art_table.add_column("File", min_width=20)
+        art_table.add_column("Description")
+        art_table.add_column("Lines", justify="right", width=6)
+        for gf in terraform.files:
+            art_table.add_row(
+                f"[green]{gf.filename}[/]",
+                gf.description,
+                str(len(gf.content.split('\n')))
+            )
+        art_table.add_row("", "", "")
+        art_table.add_row(
+            f"[green]{terraform.generated_resources}[/] resources generated",
+            f"[dim]{terraform.skipped_resources} skipped (manual/unsupported)[/]",
+            ""
+        )
+        console.print(art_table)
 
     # ── Compliance Summary ────────────────────────────────────────────────
     console.print()
@@ -577,8 +599,13 @@ def _poc_pipeline(
     # ── Output files ──────────────────────────────────────────────────────
     if output_dir:
         console.print()
-        console.print(Panel(
+        terraform_line = (
             f"[green]✓[/green]  [bold]Terraform:[/bold]       {output_dir}/terraform/\n"
+            if results.get("terraform") is not None
+            else ""
+        )
+        console.print(Panel(
+            f"{terraform_line}"
             f"[green]✓[/green]  [bold]Markdown report:[/bold] {output_dir}/migration-report.md\n"
             f"[green]✓[/green]  [bold]HTML report:[/bold]     {output_dir}/migration-report.html\n"
             f"[green]✓[/green]  [bold]Mermaid diagram:[/bold] {output_dir}/dependency-graph.mmd",

@@ -143,6 +143,12 @@ migration-factory poc my-infra.tfstate --target gcp --output ./my-output
 
 # Or test GCP → AWS direction
 migration-factory poc my-gcp.tfstate --target aws --output ./aws-output
+
+# Analyze only — assessment, security, compliance, cost, no Terraform output
+migration-factory poc infra.tfstate --mode analyze
+
+# GCP to AWS migration
+migration-factory poc gcp-infra.tfstate --target aws --output ./output
 ```
 
 ### Level 4 — Test specific parsers

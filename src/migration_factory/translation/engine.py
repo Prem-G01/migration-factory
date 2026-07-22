@@ -89,6 +89,37 @@ class TranslationEngine:
         )
         return report
 
+    @staticmethod
+    def build_identity_report(
+        graph: CanonicalInfrastructureGraph, provider: CloudProvider
+    ) -> TranslationReport:
+        """Same-cloud analysis report: no cross-cloud translation is happening
+        (source and target provider are identical), so every resource is
+        trivially SUPPORTED as-is. Used for single-cloud "analyze only" runs,
+        which have no capability matrix to load (there is no aws_to_aws.json —
+        an identity mapping is code, not curated migration data).
+        """
+        results = [
+            TranslationResult(
+                resource_id=resource.id,
+                resource_name=resource.name,
+                canonical_type=resource.canonical_type,
+                status=SupportStatus.SUPPORTED,
+                target_service=resource.source_type,
+                target_terraform_types=[resource.source_type],
+                rationale=(
+                    f"Single-cloud analysis: resource already runs natively on "
+                    f"{provider.value}; no cross-cloud translation is being performed."
+                ),
+            )
+            for resource in graph.resources.values()
+        ]
+        return TranslationReport(
+            source_provider=provider,
+            target_provider=provider,
+            results=results,
+        )
+
     def _validate_graph_provider(self, graph: CanonicalInfrastructureGraph) -> None:
         """A translation run is defined for exactly one source provider.
         Mixed-provider graphs (valid for discovery/inventory) must be split
