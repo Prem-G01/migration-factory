@@ -1,0 +1,4 @@
+"Resource ID","Resource Type","Region","Account ID","Service"
+"i-0f9e8d7c6b5a4f3e2","EC2 Instance","us-west-2","123456789012","EC2"
+"my-app-logs-bucket","S3 Bucket","us-west-2","123456789012","S3"
+"vpc-0d1e2f3a4b5c6d7e8","VPC","us-west-2","123456789012","VPC"

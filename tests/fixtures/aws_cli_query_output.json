@@ -1,0 +1,26 @@
+[
+  {
+    "InstanceId": "i-0query1111aaaa2222",
+    "InstanceType": "t3.micro",
+    "State": {"Code": 16, "Name": "running"},
+    "VpcId": "vpc-0query1111aaaa2222",
+    "SubnetId": "subnet-0query1111aaaa2222",
+    "PrivateIpAddress": "10.1.0.10",
+    "PublicIpAddress": "3.10.20.30",
+    "Placement": {"AvailabilityZone": "us-west-2a"},
+    "SecurityGroups": [{"GroupId": "sg-0query1111aaaa2222", "GroupName": "default"}],
+    "Tags": [{"Key": "Name", "Value": "query-instance-1"}]
+  },
+  {
+    "InstanceId": "i-0query2222bbbb3333",
+    "InstanceType": "c5.xlarge",
+    "State": {"Code": 16, "Name": "running"},
+    "VpcId": "vpc-0query1111aaaa2222",
+    "SubnetId": "subnet-0query2222bbbb3333",
+    "PrivateIpAddress": "10.1.0.11",
+    "PublicIpAddress": null,
+    "Placement": {"AvailabilityZone": "us-west-2b"},
+    "SecurityGroups": [{"GroupId": "sg-0query1111aaaa2222", "GroupName": "default"}],
+    "Tags": [{"Key": "Name", "Value": "query-instance-2"}]
+  }
+]

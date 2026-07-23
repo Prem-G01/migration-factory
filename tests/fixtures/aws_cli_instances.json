@@ -1,0 +1,67 @@
+{
+  "Reservations": [
+    {
+      "ReservationId": "r-0123456789abcdef0",
+      "OwnerId": "123456789012",
+      "Instances": [
+        {
+          "InstanceId": "i-0abc123def456789a",
+          "InstanceType": "t3.medium",
+          "State": {"Code": 16, "Name": "running"},
+          "VpcId": "vpc-0a1b2c3d4e5f6g7h8",
+          "SubnetId": "subnet-0a1b2c3d4e5f6g7h8",
+          "PrivateIpAddress": "10.0.1.15",
+          "PublicIpAddress": "54.210.11.22",
+          "Placement": {"AvailabilityZone": "us-east-1a"},
+          "SecurityGroups": [{"GroupId": "sg-0abc123def456789a", "GroupName": "web-sg"}],
+          "Tags": [
+            {"Key": "Name", "Value": "web-server-1"},
+            {"Key": "Environment", "Value": "production"}
+          ]
+        }
+      ]
+    },
+    {
+      "ReservationId": "r-0234567890bcdef01",
+      "OwnerId": "123456789012",
+      "Instances": [
+        {
+          "InstanceId": "i-0bcd234ef567890ab",
+          "InstanceType": "m5.large",
+          "State": {"Code": 16, "Name": "running"},
+          "VpcId": "vpc-0a1b2c3d4e5f6g7h8",
+          "SubnetId": "subnet-0b2c3d4e5f6g7h8i9",
+          "PrivateIpAddress": "10.0.2.20",
+          "PublicIpAddress": null,
+          "Placement": {"AvailabilityZone": "us-east-1b"},
+          "SecurityGroups": [{"GroupId": "sg-0def456789abc012d", "GroupName": "app-sg"}],
+          "Tags": [
+            {"Key": "Name", "Value": "app-server-1"},
+            {"Key": "Environment", "Value": "production"}
+          ]
+        }
+      ]
+    },
+    {
+      "ReservationId": "r-0345678901cdef012",
+      "OwnerId": "123456789012",
+      "Instances": [
+        {
+          "InstanceId": "i-0cde345fg678901bc",
+          "InstanceType": "t3.small",
+          "State": {"Code": 16, "Name": "running"},
+          "VpcId": "vpc-0a1b2c3d4e5f6g7h8",
+          "SubnetId": "subnet-0b2c3d4e5f6g7h8i9",
+          "PrivateIpAddress": "10.0.2.21",
+          "PublicIpAddress": null,
+          "Placement": {"AvailabilityZone": "us-east-1b"},
+          "SecurityGroups": [{"GroupId": "sg-0def456789abc012d", "GroupName": "app-sg"}],
+          "Tags": [
+            {"Key": "Name", "Value": "worker-1"},
+            {"Key": "Environment", "Value": "production"}
+          ]
+        }
+      ]
+    }
+  ]
+}

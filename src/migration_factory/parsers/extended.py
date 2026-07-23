@@ -7,12 +7,15 @@ a working parser registered via entry points.
 from __future__ import annotations
 
 import re
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from migration_factory.core.exceptions import ParserError
 from migration_factory.core.logging import get_logger
 from migration_factory.domain.enums import CloudProvider
 from migration_factory.parsers.base import BaseParser, ParsedResource, ParserResult, ParseWarning
+from migration_factory.parsers.column_detection import build_resource_from_row
 
 logger = get_logger(__name__)
 
@@ -176,8 +179,38 @@ class TerraformLogParser(BaseParser):
 # ---------------------------------------------------------------------------
 
 
+def _cell_to_str(value: Any) -> str:
+    """Normalize a raw openpyxl cell value to str: None/merged cells -> '',
+    datetimes -> ISO string, whole-number floats -> plain int string.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _first_sheet_with_data(wb: Any) -> tuple[Any, list[tuple[Any, ...]]]:
+    """Some exports carry empty placeholder sheets before the real data —
+    use the first sheet that actually has a non-empty row, not just wb.active.
+    """
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        if any(any(c not in (None, "") for c in row) for row in rows):
+            return ws, rows
+    return None, []
+
+
 class ExcelInventoryParser(BaseParser):
-    """Parses Excel (.xlsx) inventory files. Expects columns: type, name, id, provider."""
+    """Parses Excel (.xlsx) inventory files.
+
+    Same alias/inference logic as CSVInventoryParser (see
+    `column_detection.py`), plus Excel-specific quirks: a title row before
+    the real header row, numeric/date cell values, and picking the first
+    sheet that actually has data.
+    """
 
     name = "excel_inventory"
 
@@ -195,52 +228,40 @@ class ExcelInventoryParser(BaseParser):
 
         try:
             wb = openpyxl.load_workbook(str(source_path), read_only=True, data_only=True)
-            ws = wb.active
+            ws, raw_rows = _first_sheet_with_data(wb)
+            wb.close()
         except Exception as exc:
             raise ParserError(f"Could not read Excel file: {source_path}", cause=exc) from exc
 
-        if ws is None:
+        if ws is None or not raw_rows:
             return ParserResult(parser_name=self.name, source_path=str(source_path))
+
+        # Some exports put a title ("AWS Resource Inventory") in row 1 and
+        # the real headers in row 2 — a title row has very few non-empty
+        # cells relative to the sheet's actual width.
+        header_row_idx = 0
+        first_row = raw_rows[0]
+        if len(raw_rows) > 1 and len(first_row) > 2:
+            nonempty = sum(1 for c in first_row if c not in (None, ""))
+            if nonempty <= 2:
+                header_row_idx = 1
+
+        header_row = raw_rows[header_row_idx]
+        headers = [_cell_to_str(h) or f"col_{i}" for i, h in enumerate(header_row)]
 
         resources: list[ParsedResource] = []
         warnings: list[ParseWarning] = []
 
-        rows = list(ws.iter_rows(values_only=True))
-        if not rows:
-            return ParserResult(parser_name=self.name, source_path=str(source_path))
-
-        # First row is headers
-        headers = [str(h).strip().lower() if h else f"col_{i}" for i, h in enumerate(rows[0])]
-
-        for row_num, row in enumerate(rows[1:], 2):
+        for row_num, row in enumerate(raw_rows[header_row_idx + 1 :], header_row_idx + 2):
             try:
-                row_dict = {headers[i]: str(v).strip() if v is not None else "" for i, v in enumerate(row) if i < len(headers)}
-
-                resource_type = row_dict.get("type", "unknown")
-                name = row_dict.get("name", "unnamed")
-                rid = row_dict.get("id", name)
-                provider_str = row_dict.get("provider", "aws").lower()
-
-                provider = CloudProvider.UNKNOWN
-                if provider_str in {e.value for e in CloudProvider}:
-                    provider = CloudProvider(provider_str)
-
-                attrs = {k: v for k, v in row_dict.items() if k not in {"type", "name", "id", "provider", "depends_on"}}
-                depends = [d.strip() for d in row_dict.get("depends_on", "").split(",") if d.strip()]
-
-                resources.append(ParsedResource(
-                    source_provider=provider,
-                    source_type=resource_type,
-                    source_identifier=rid,
-                    name=name,
-                    attributes=attrs,
-                    raw_depends_on=depends,
-                    source_path=str(source_path),
-                ))
+                row_dict = {headers[i]: _cell_to_str(v) for i, v in enumerate(row) if i < len(headers)}
+                resource = build_resource_from_row(row_dict, row_num, str(source_path))
+                if resource is None:
+                    continue  # blank row
+                resources.append(resource)
             except Exception as exc:
                 warnings.append(ParseWarning(message=f"Row {row_num}: {exc}"))
 
-        wb.close()
         return ParserResult(
             parser_name=self.name,
             source_path=str(source_path),

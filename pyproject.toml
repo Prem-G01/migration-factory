@@ -73,6 +73,8 @@ terraform_log = "migration_factory.parsers.extended:TerraformLogParser"
 excel_inventory = "migration_factory.parsers.extended:ExcelInventoryParser"
 arm_template = "migration_factory.parsers.azure_cmdb:ARMTemplateParser"
 servicenow_cmdb = "migration_factory.parsers.azure_cmdb:ServiceNowCMDBParser"
+aws_cli_output = "migration_factory.parsers.multi_format:AWSCLIOutputParser"
+gcp_cli_output = "migration_factory.parsers.multi_format:GCPCLIOutputParser"
 
 [project.entry-points."migration_factory.mappers"]
 aws_to_canonical = "migration_factory.mappers.aws_to_canonical:AWSToCanonicalMapper"
