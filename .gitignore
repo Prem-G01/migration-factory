@@ -21,3 +21,11 @@ dist/
 build/
 *.env
 .env
+
+# Local development
+*.db
+local.db
+output*/
+*-output/
+*-output-*/
+
