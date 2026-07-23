@@ -128,13 +128,19 @@ def _run_poc(args: argparse.Namespace, settings: object) -> int:  # noqa: ANN001
     from rich.panel import Panel
 
     console = Console(no_color=getattr(args, "no_color", False))
+    mode = "analyze" if args.analyze_only else args.mode
 
     # ── Banner ────────────────────────────────────────────────────────────
     console.print()
+    target_line = (
+        "[dim]Mode:[/dim] [bold]ANALYZE ONLY[/bold]"
+        if mode != "migrate"
+        else f"[dim]Target:[/dim] [bold]{args.target.upper()}[/bold]"
+    )
     console.print(Panel.fit(
         "[bold cyan]Migration Factory[/bold cyan]  [dim]AI-Powered Multi-Cloud Infrastructure Migration[/dim]\n"
         f"[dim]Source:[/dim] {args.source_path}   "
-        f"[dim]Target:[/dim] [bold]{args.target.upper()}[/bold]",
+        f"{target_line}",
         border_style="cyan",
     ))
     console.print()
@@ -142,7 +148,6 @@ def _run_poc(args: argparse.Namespace, settings: object) -> int:  # noqa: ANN001
     source_path = args.source_path
     target_cloud = args.target
     output_dir = args.output
-    mode = "analyze" if args.analyze_only else args.mode
 
     try:
         _poc_pipeline(console, source_path, target_cloud, output_dir, box, mode=mode)
@@ -240,6 +245,13 @@ def _poc_pipeline(
                 )
                 if provider_counts:
                     source_provider = CloudProvider(provider_counts.most_common(1)[0][0])
+                if mode != "migrate":
+                    # Analyze-only has no real migration target: force
+                    # same-cloud so translation takes the identity path
+                    # (see Translation stage below) instead of silently
+                    # running a real cross-cloud capability matrix against
+                    # whatever --target happens to default to.
+                    target_provider = source_provider
 
             # ── 2. Discovery / Enrichment ─────────────────────────────────
             elif key == "Discovery":
@@ -359,8 +371,11 @@ def _poc_pipeline(
 
     # ── Executive Summary ─────────────────────────────────────────────────
     source_label = source_provider.value.upper() if ingestion.graph.resources else "CLOUD"
-    target_label = target_provider.value.upper()
-    direction = f"{source_label} → {target_label}"
+    if mode != "migrate":
+        direction = f"{source_label} Analysis"
+    else:
+        target_label = target_provider.value.upper()
+        direction = f"{source_label} → {target_label}"
 
     summary = Table(show_header=False, box=rich_box.ROUNDED, border_style="cyan", padding=(0, 1))
     summary.add_column("", style="dim", min_width=28)
