@@ -76,6 +76,19 @@ class ParsingSettings(BaseSettings):
     )
 
 
+class DatabaseSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="MF_DATABASE__")
+
+    url: str = Field(
+        default="postgresql+asyncpg://mf_user:mf_pass@localhost:5432/migration_factory",
+        description=(
+            "Async SQLAlchemy connection string for the API's run store. "
+            "In docker-compose, the api service overrides this to point at "
+            "the db service (host 'db') via MF_DATABASE__URL."
+        ),
+    )
+
+
 class Settings(BaseSettings):
     """Root settings object. Construct via `Settings()` — pydantic-settings
     resolves environment variables, `.env`, and defaults automatically.
@@ -96,6 +109,7 @@ class Settings(BaseSettings):
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
     parsing: ParsingSettings = Field(default_factory=ParsingSettings)
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
 
     @property
     def is_production(self) -> bool:

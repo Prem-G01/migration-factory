@@ -31,8 +31,14 @@ api = [
     "fastapi>=0.111,<1",
     "uvicorn>=0.30,<1",
     "python-multipart>=0.0.9",
+    "sqlalchemy>=2.0,<3",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
 ]
 dev = [
+    # aiosqlite: test-only, backs the API tests' hermetic in-memory DB
+    # override (see tests/unit/test_api.py) — production uses asyncpg only.
+    "aiosqlite>=0.20",
     "pytest>=8.1",
     "pytest-cov>=5.0",
     "ruff>=0.4",
@@ -43,6 +49,9 @@ dev = [
     "fastapi>=0.111,<1",
     "uvicorn>=0.30,<1",
     "python-multipart>=0.0.9",
+    "sqlalchemy>=2.0,<3",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
 ]
 
 # ---------------------------------------------------------------------------

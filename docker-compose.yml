@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: migration_factory
+      POSTGRES_USER: mf_user
+      POSTGRES_PASSWORD: mf_pass
+    ports: ["5432:5432"]
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mf_user -d migration_factory"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+  api:
+    build: .
+    environment:
+      MF_DATABASE__URL: postgresql+asyncpg://mf_user:mf_pass@db:5432/migration_factory
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+
+volumes:
+  db_data:

@@ -1,17 +1,51 @@
 """FastAPI REST layer tests — exercised in-process via TestClient, no server
 needed. Covers all 7 endpoints across the AWS->GCP, GCP->AWS, and
 analyze-only cases.
+
+Runs are persisted through the real `get_session` dependency, but backed by
+an in-memory SQLite engine instead of the Postgres instance docker-compose
+provisions — production/Docker use asyncpg (see database.py); only the
+FastAPI dependency is swapped here, so pytest stays hermetic (no external
+service needed) like every other test in this suite.
 """
 
 from __future__ import annotations
 
+import asyncio
 import zipfile
+from collections.abc import AsyncGenerator
 from io import BytesIO
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
+from migration_factory.api.database import Base, get_session
 from migration_factory.api.main import app
+
+_test_engine = create_async_engine(
+    "sqlite+aiosqlite:///:memory:",
+    poolclass=StaticPool,
+    connect_args={"check_same_thread": False},
+)
+_test_session_factory = async_sessionmaker(_test_engine, expire_on_commit=False)
+
+
+async def _create_tables() -> None:
+    async with _test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+asyncio.run(_create_tables())
+
+
+async def _override_get_session() -> AsyncGenerator[AsyncSession]:
+    async with _test_session_factory() as session:
+        yield session
+
+
+app.dependency_overrides[get_session] = _override_get_session
 
 client = TestClient(app)
 
