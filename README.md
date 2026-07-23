@@ -147,7 +147,7 @@ rollback planning → reporting (JSON + HTML). Terraform generation is a
 | Terraform plan (JSON) | `resource_changes` key |
 | Terraform HCL (.tf) | File extension |
 | CloudFormation | `AWSTemplateFormatVersion` key |
-| ARM Template (Azure) | `$schema` + azure URL |
+| ARM Template (Azure) (parser available, Azure use cases not in current release scope) | `$schema` + azure URL |
 | CSV inventory | File extension |
 | Excel inventory (.xlsx) | File extension |
 | JSON inventory | `inventory` or `resources` key |

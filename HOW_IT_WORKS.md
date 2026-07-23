@@ -160,7 +160,7 @@ migration-factory ingest my-stack.json
 # CSV inventory
 migration-factory ingest resources.csv
 
-# ARM template (Azure)
+# ARM template (Azure parser available, Azure use cases not in scope for this release)
 migration-factory ingest template.json
 
 # Excel inventory
@@ -257,7 +257,7 @@ print(f"Generated {len(terraform.files)} Terraform files")
 | Terraform plan | auto-detected | `terraform show -json plan.out > plan.json` |
 | Terraform HCL | auto-detected | `migration-factory poc main.tf` |
 | CloudFormation | auto-detected | `migration-factory poc stack.json` |
-| ARM Template (Azure) | auto-detected | `migration-factory poc template.json` |
+| ARM Template (Azure parser available, not in current release scope) | auto-detected | `migration-factory poc template.json` |
 | CSV inventory | auto-detected | type,name,id,provider columns |
 | Excel inventory | auto-detected | same columns as CSV |
 | JSON inventory | auto-detected | `{"inventory": [...]}` |

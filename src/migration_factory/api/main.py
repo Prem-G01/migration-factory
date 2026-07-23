@@ -309,7 +309,7 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "version": "2.0.3",
         "engines": 28,
-        "supported_sources": ["aws", "gcp", "azure"],
+        "supported_sources": ["aws", "gcp"],
         "supported_targets": ["gcp", "aws"],
         "parsers": 10,
         "tests_passing": 346,
