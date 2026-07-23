@@ -1,49 +1,47 @@
-import axios from "axios";
+import axios from 'axios'
 
-const client = axios.create({
-  baseURL: "http://localhost:8000",
-});
+const api = axios.create({ baseURL: 'http://localhost:8000' })
 
-export async function analyzeFile(file, target) {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("target", target || "analyze_only");
-  const response = await client.post("/api/v1/analyze", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
-  return response.data;
+export const analyzeFile = async (file, target) => {
+  const form = new FormData()
+  form.append('file', file)
+  if (target) form.append('target', target)
+  const { data } = await api.post('/api/v1/analyze', form)
+  return data
 }
 
-export async function getReport(runId) {
-  const response = await client.get(`/api/v1/report/${runId}`);
-  return response.data;
+export const getReport = async (runId) => {
+  const { data } = await api.get(`/api/v1/report/${runId}`)
+  return data
 }
 
-export async function getHtmlReport(runId) {
-  const response = await client.get(`/api/v1/report/${runId}/html`);
-  return response.data;
+export const getHtmlReport = async (runId) => {
+  const { data } = await api.get(`/api/v1/report/${runId}/html`)
+  return data
 }
 
-export async function downloadTerraform(runId) {
-  const response = await client.get(`/api/v1/terraform/${runId}`, {
-    responseType: "blob",
-  });
-  return response.data;
+export const downloadTerraform = async (runId) => {
+  const response = await api.get(`/api/v1/terraform/${runId}`,
+    { responseType: 'blob' })
+  const url = URL.createObjectURL(response.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `migration-terraform-${runId.slice(0,8)}.zip`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
-export async function getRuns() {
-  const response = await client.get("/api/v1/runs");
-  return response.data.runs;
+export const getRuns = async () => {
+  const { data } = await api.get('/api/v1/runs')
+  return data
 }
 
-export async function deleteRun(runId) {
-  const response = await client.delete(`/api/v1/runs/${runId}`);
-  return response.data;
+export const deleteRun = async (runId) => {
+  const { data } = await api.delete(`/api/v1/runs/${runId}`)
+  return data
 }
 
-export async function getHealth() {
-  const response = await client.get("/api/v1/health");
-  return response.data;
+export const getHealth = async () => {
+  const { data } = await api.get('/api/v1/health')
+  return data
 }
-
-export default client;

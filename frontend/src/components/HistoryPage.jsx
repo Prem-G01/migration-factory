@@ -1,125 +1,140 @@
-import { useCallback, useEffect, useState } from "react";
-import { deleteRun, getReport, getRuns } from "../api";
+import { useState, useEffect } from 'react'
+import { getRuns, deleteRun } from '../api'
 
-const RISK_COLORS = {
-  low: "bg-green-100 text-green-800",
-  medium: "bg-yellow-100 text-yellow-800",
-  high: "bg-red-100 text-red-800",
-  critical: "bg-red-200 text-red-900",
-};
+export default function HistoryPage({ onViewRun, onNewAnalysis }) {
+  const [runs, setRuns] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
-export default function HistoryPage({ onViewRun }) {
-  const [runs, setRuns] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [busyRunId, setBusyRunId] = useState(null);
-
-  const loadRuns = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const fetchRuns = async () => {
+    setLoading(true)
     try {
-      const data = await getRuns();
-      setRuns(data.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)));
-    } catch (err) {
-      setError(err.message || "Failed to load run history.");
+      const data = await getRuns()
+      setRuns(data.runs || [])
+    } catch (e) {
+      setError('Failed to load run history')
     } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadRuns();
-  }, [loadRuns]);
-
-  async function handleView(runId) {
-    setBusyRunId(runId);
-    try {
-      const report = await getReport(runId);
-      onViewRun(runId, report);
-    } catch (err) {
-      setError(err.response?.data?.detail || "Failed to load report.");
-    } finally {
-      setBusyRunId(null);
+      setLoading(false)
     }
   }
 
-  async function handleDelete(runId) {
-    setBusyRunId(runId);
+  useEffect(() => { fetchRuns() }, [])
+
+  const handleDelete = async (runId) => {
+    if (!confirm('Delete this run?')) return
     try {
-      await deleteRun(runId);
-      await loadRuns();
-    } catch (err) {
-      setError(err.response?.data?.detail || "Failed to delete run.");
-    } finally {
-      setBusyRunId(null);
+      await deleteRun(runId)
+      setRuns(runs.filter(r => r.run_id !== runId))
+    } catch (e) {
+      alert('Failed to delete run')
     }
+  }
+
+  const riskBadge = (r) => {
+    const colors = {
+      low: 'text-green-400 bg-green-900',
+      medium: 'text-yellow-400 bg-yellow-900',
+      high: 'text-red-400 bg-red-900'
+    }
+    return `px-2 py-0.5 rounded text-xs font-bold ${colors[r] || 'text-gray-400 bg-gray-800'}`
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-10">
-      <h1 className="mb-6 text-2xl font-bold text-gray-900">Run History</h1>
+    <div className="min-h-screen bg-gray-950 text-white">
+      <div className="bg-gray-900 border-b border-gray-800 px-6 py-4
+        flex items-center justify-between">
+        <span className="text-xl font-bold">🏭 Migration Factory</span>
+        <button onClick={onNewAnalysis}
+          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-medium">
+          + New Analysis
+        </button>
+      </div>
 
-      {error && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
-      )}
+      <div className="max-w-5xl mx-auto px-6 py-8">
+        <h2 className="text-xl font-semibold mb-6">Analysis History</h2>
 
-      {loading ? (
-        <p className="text-gray-500">Loading…</p>
-      ) : runs.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-12 text-center text-gray-500">
-          No previous analyses. Upload a file to get started.
-        </div>
-      ) : (
-        <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-gray-200 text-gray-500">
-                <th className="px-4 py-3">Time</th>
-                <th className="px-4 py-3">Direction</th>
-                <th className="px-4 py-3">Resources</th>
-                <th className="px-4 py-3">Risk</th>
-                <th className="px-4 py-3">Savings</th>
-                <th className="px-4 py-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((run) => (
-                <tr key={run.run_id} className="border-b border-gray-100">
-                  <td className="px-4 py-3 text-gray-500">{new Date(run.created_at).toLocaleString()}</td>
-                  <td className="px-4 py-3 font-medium">{run.direction}</td>
-                  <td className="px-4 py-3">{run.resources}</td>
-                  <td className="px-4 py-3">
-                    <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${RISK_COLORS[run.risk_level] || "bg-gray-100 text-gray-700"}`}>
-                      {run.risk_level}
-                    </span>
-                  </td>
-                  <td className={`px-4 py-3 font-medium ${run.monthly_savings >= 0 ? "text-green-600" : "text-red-600"}`}>
-                    ${run.monthly_savings.toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleView(run.run_id)}
-                        disabled={busyRunId === run.run_id}
-                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                      >
-                        View
-                      </button>
-                      <button
-                        onClick={() => handleDelete(run.run_id)}
-                        disabled={busyRunId === run.run_id}
-                        className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
+        {loading && (
+          <div className="text-center py-16 text-gray-500">Loading...</div>
+        )}
+
+        {error && (
+          <div className="p-4 bg-red-900 border border-red-700 rounded-xl text-red-300">
+            {error}
+          </div>
+        )}
+
+        {!loading && runs.length === 0 && (
+          <div className="text-center py-16">
+            <div className="text-5xl mb-4">📭</div>
+            <p className="text-gray-400">No previous analyses.</p>
+            <button onClick={onNewAnalysis}
+              className="mt-4 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 font-medium">
+              Upload a file to get started
+            </button>
+          </div>
+        )}
+
+        {runs.length > 0 && (
+          <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 text-gray-500">
+                  <th className="text-left px-4 py-3">Direction</th>
+                  <th className="text-right px-4 py-3">Resources</th>
+                  <th className="text-left px-4 py-3">Risk</th>
+                  <th className="text-right px-4 py-3">Savings</th>
+                  <th className="text-right px-4 py-3">Duration</th>
+                  <th className="text-right px-4 py-3">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {runs.map((run) => (
+                  <tr key={run.run_id}
+                    className="border-b border-gray-800 last:border-0 hover:bg-gray-800">
+                    <td className="px-4 py-3 font-medium">
+                      {run.direction || 'Analysis'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-400">
+                      {run.resources ?? '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      {run.risk_level && (
+                        <span className={riskBadge(run.risk_level)}>
+                          {run.risk_level.toUpperCase()}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right text-green-400">
+                      {run.monthly_savings != null
+                        ? `$${run.monthly_savings}/mo` : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-500">
+                      {run.duration_seconds != null
+                        ? `${run.duration_seconds.toFixed(1)}s` : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => onViewRun(run.run_id)}
+                          className="px-3 py-1 rounded bg-blue-800 hover:bg-blue-700
+                            text-blue-300 text-xs font-medium">
+                          View
+                        </button>
+                        <button
+                          onClick={() => handleDelete(run.run_id)}
+                          className="px-3 py-1 rounded bg-gray-800 hover:bg-red-900
+                            text-gray-400 hover:text-red-300 text-xs font-medium">
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
-  );
+  )
 }

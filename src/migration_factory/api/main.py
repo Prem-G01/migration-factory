@@ -138,6 +138,10 @@ def _run_pipeline(source_path: Path, source_filename: str, target: _Target | Non
     html_report = ReportingEngine().to_html(migration_report)
 
     direction = _direction_label(source_provider, target_provider)
+    run_id = str(uuid.uuid4())
+    duration_seconds = round(time.perf_counter() - started_at, 2)
+    created_at = datetime.now(UTC)
+
     summary: dict[str, Any] = {
         "resources": len(ingestion.graph.resources),
         "complexity_score": assessment.overall_complexity_score,
@@ -149,15 +153,22 @@ def _run_pipeline(source_path: Path, source_filename: str, target: _Target | Non
         "downtime_minutes": plan.cutover_plan.total_downtime_minutes,
         "waves": len(plan.waves),
         "blockers": len(assessment.blockers),
+        "duration_seconds": duration_seconds,
     }
-
-    run_id = str(uuid.uuid4())
-    duration_seconds = round(time.perf_counter() - started_at, 2)
-    created_at = datetime.now(UTC)
 
     # Every nested value must be plain JSON (dicts/lists/str/int/float/bool),
     # not Pydantic model instances: this dict lands in a SQLAlchemy JSON
     # column via plain json.dumps, not FastAPI's jsonable_encoder.
+    assessment_dict = assessment.model_dump(mode="json")
+    target_service_by_resource = {r.resource_id: r.target_service for r in translation.results}
+    for resource_assessment in assessment_dict["resource_assessments"]:
+        # ResourceAssessment has no target_service field of its own — that
+        # lives on the matching TranslationResult. Merged in here so the
+        # dashboard's resource table doesn't need a second lookup.
+        resource_assessment["target_service"] = target_service_by_resource.get(
+            resource_assessment["resource_id"]
+        )
+
     full_report: dict[str, Any] = {
         "run_id": run_id,
         "status": "completed",
@@ -171,7 +182,7 @@ def _run_pipeline(source_path: Path, source_filename: str, target: _Target | Non
         "knowledge_graph": knowledge_graph.model_dump(mode="json"),
         "translation_summary": translation.summary,
         "translation_results": [r.model_dump(mode="json") for r in translation.results],
-        "assessment": assessment.model_dump(mode="json"),
+        "assessment": assessment_dict,
         "security": security.model_dump(mode="json"),
         "compliance": compliance.model_dump(mode="json"),
         "finops": finops.model_dump(mode="json"),
