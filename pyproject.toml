@@ -125,6 +125,11 @@ plugins = ["pydantic.mypy"]
 # as literal argument defaults; B008 doesn't know this pattern from a real
 # mutable-default bug.
 "src/migration_factory/api/main.py" = ["B008"]
+# Alembic's own script.py.mako template controls this file's style
+# (Union[...] typing, import layout) — not hand-authored application code,
+# and every future `alembic revision --autogenerate` regenerates the same
+# pattern, so fighting it per-file each time isn't worth it.
+"alembic/versions/*.py" = ["UP007", "I001"]
 
 [[tool.mypy.overrides]]
 module = ["rich.*"]
