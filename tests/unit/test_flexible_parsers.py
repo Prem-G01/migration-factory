@@ -85,6 +85,16 @@ class TestFlexibleCSVParser:
         result = CSVInventoryParser().parse(path)
         assert result.resources[0].source_provider == CloudProvider.GCP
 
+    def test_maps_colon_separated_resource_type_shorthand(self, tmp_path: Path) -> None:
+        # AWS Tag Editor / Resource Groups Tagging API-style exports give
+        # "ec2:instance" / "s3:bucket" rather than "EC2 Instance" / "S3 Bucket".
+        content = "Resource Type,Resource Name,Resource ID\nec2:instance,web-01,i-0abc123\ns3:bucket,my-bucket,my-bucket\n"
+        path = _write_csv(tmp_path, content)
+        result = CSVInventoryParser().parse(path)
+        types = {r.source_identifier: r.source_type for r in result.resources}
+        assert types["i-0abc123"] == "aws_instance"
+        assert types["my-bucket"] == "aws_s3_bucket"
+
     def test_handles_bom_in_csv(self, tmp_path: Path) -> None:
         content = "﻿type,name,id\naws_s3_bucket,my-bucket,my-bucket\n"
         path = tmp_path / "bom.csv"
@@ -323,6 +333,57 @@ class TestAWSCLIOutputParser:
             assert parser.supports(path) is True, fixture
             result = parser.parse(path)
             assert result.resource_count == expected_count, fixture
+
+    def test_each_resource_type_uses_its_own_id_field_not_vpc_id(self, tmp_path: Path) -> None:
+        # Regression: a VPC and its subnet/instance sharing the same VpcId
+        # value must NOT collide -- each resource type keys off its own id
+        # field (InstanceId / SubnetId / GroupId / ...), never VpcId.
+        data = {
+            "Reservations": [{"Instances": [{
+                "InstanceId": "i-001", "InstanceType": "t3.medium",
+                "State": {"Name": "running"}, "VpcId": "vpc-001",
+                "Tags": [{"Key": "Name", "Value": "web-server"}],
+                "Placement": {"AvailabilityZone": "us-east-1a"}, "SecurityGroups": [],
+            }]}],
+            "Vpcs": [{"VpcId": "vpc-001", "CidrBlock": "10.0.0.0/16", "IsDefault": False,
+                      "Tags": [{"Key": "Name", "Value": "main-vpc"}]}],
+            "Subnets": [{"SubnetId": "subnet-001", "CidrBlock": "10.0.1.0/24", "VpcId": "vpc-001",
+                         "AvailabilityZone": "us-east-1a", "Tags": []}],
+            "SecurityGroups": [{"GroupId": "sg-001", "GroupName": "web-sg", "Description": "Web security group",
+                                 "VpcId": "vpc-001", "IpPermissions": [], "IpPermissionsEgress": []}],
+        }
+        path = tmp_path / "collision.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        result = AWSCLIOutputParser().parse(path)
+        assert result.resource_count == 4
+        ids = {r.source_identifier for r in result.resources}
+        assert ids == {"i-001", "vpc-001", "subnet-001", "sg-001"}
+
+        # Must also survive real graph construction (this is what actually
+        # crashed with DependencyGraphError: Duplicate resource id).
+        from migration_factory.pipeline import IngestionPipeline
+
+        graph = IngestionPipeline().run(path).graph
+        assert len(graph.resources) == 4
+
+    def test_dedupes_true_duplicate_id_and_warns(self, tmp_path: Path) -> None:
+        data = {
+            "Vpcs": [
+                {"VpcId": "vpc-dup", "CidrBlock": "10.0.0.0/16", "IsDefault": False,
+                 "Tags": [{"Key": "Name", "Value": "first"}]},
+                {"VpcId": "vpc-dup", "CidrBlock": "10.0.0.0/16", "IsDefault": False,
+                 "Tags": [{"Key": "Name", "Value": "second"}]},
+            ],
+        }
+        path = tmp_path / "dup.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        result = AWSCLIOutputParser().parse(path)
+        assert result.resource_count == 1
+        assert result.resources[0].name == "first"  # first occurrence kept
+        assert len(result.warnings) == 1
+        assert "vpc-dup" in result.warnings[0].message
 
 
 # ---------------------------------------------------------------------------

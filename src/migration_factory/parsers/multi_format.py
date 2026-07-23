@@ -356,7 +356,8 @@ class AWSCLIOutputParser(BaseParser):
         if isinstance(data, list):
             # `--query 'Reservations[].Instances[]'` flat instance list.
             resources.extend(self._instance_to_resource(item, path_str) for item in data if isinstance(item, dict))
-            return ParserResult(parser_name=self.name, source_path=path_str, resources=resources)
+            deduped, warnings = self._dedupe(resources)
+            return ParserResult(parser_name=self.name, source_path=path_str, resources=deduped, warnings=warnings)
 
         if not isinstance(data, dict):
             raise ParserError(f"AWS CLI JSON output is not an object or list: {source_path}", context={"source_path": path_str})
@@ -388,7 +389,36 @@ class AWSCLIOutputParser(BaseParser):
             if isinstance(url, str):
                 resources.append(self._queue_to_resource(url, path_str))
 
-        return ParserResult(parser_name=self.name, source_path=path_str, resources=resources)
+        deduped, warnings = self._dedupe(resources)
+        return ParserResult(parser_name=self.name, source_path=path_str, resources=deduped, warnings=warnings)
+
+    @staticmethod
+    def _dedupe(resources: list[ParsedResource]) -> tuple[list[ParsedResource], list[ParseWarning]]:
+        """Combined multi-command AWS CLI JSON can legitimately repeat a
+        resource (e.g. concatenating `describe-vpcs` output run twice
+        against the same account/region). Canonical ids are
+        `{provider}:{source_identifier}` with no type component, so ANY
+        collision — even across two different resource types — would crash
+        graph construction downstream (`DependencyGraphError: Duplicate
+        resource id`). Skip the repeat and warn instead of letting that
+        happen; first occurrence wins.
+        """
+        seen: set[str] = set()
+        deduped: list[ParsedResource] = []
+        warnings: list[ParseWarning] = []
+        for resource in resources:
+            if resource.source_identifier in seen:
+                warnings.append(ParseWarning(
+                    source_identifier=resource.source_identifier,
+                    message=(
+                        f"Duplicate resource id {resource.source_identifier!r} "
+                        f"(type {resource.source_type!r}) — skipped, first occurrence kept"
+                    ),
+                ))
+                continue
+            seen.add(resource.source_identifier)
+            deduped.append(resource)
+        return deduped, warnings
 
     @staticmethod
     def _instance_to_resource(instance: dict[str, Any], source_path: str) -> ParsedResource:

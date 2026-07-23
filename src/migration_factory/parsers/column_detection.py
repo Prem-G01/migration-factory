@@ -139,8 +139,14 @@ def _find_header(norm_to_orig: dict[str, str], canonical: str, aliases: set[str]
 
 def _map_description_to_type(value: str) -> str | None:
     lowered = value.strip().lower()
+    # AWS Tag Editor / Resource Groups Tagging API-style exports commonly
+    # give the resource type as "ec2:instance" or "ec2-instance" rather than
+    # "EC2 Instance" — fold separators to spaces so phrase matching (below)
+    # still catches it, without touching the un-normalized value used
+    # elsewhere (e.g. the terraform-style-type check right after this call).
+    normalized = re.sub(r"[:\-_/]+", " ", lowered)
     for phrase, tf_type in _RESOURCE_TYPE_DESCRIPTIONS:
-        if phrase in lowered:
+        if phrase in lowered or phrase in normalized:
             return tf_type
     return None
 
