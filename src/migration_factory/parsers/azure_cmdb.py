@@ -23,7 +23,7 @@ from migration_factory.domain.canonical_model import (
 )
 from migration_factory.domain.enums import CanonicalResourceType, CloudProvider
 from migration_factory.mappers.base import BaseMapper
-from migration_factory.parsers.base import BaseParser, ParsedResource, ParserResult, ParseWarning
+from migration_factory.parsers.base import BaseParser, ParsedResource, ParserResult, ParseWarning, read_text_smart
 
 logger = get_logger(__name__)
 
@@ -61,7 +61,7 @@ class ARMTemplateParser(BaseParser):
         if source_path.suffix != ".json":
             return False
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
             return isinstance(data, dict) and (
                 "$schema" in data and "resources" in data
                 and "azure" in str(data.get("$schema", "")).lower()
@@ -71,7 +71,7 @@ class ARMTemplateParser(BaseParser):
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
         except Exception as exc:
             raise ParserError(f"Could not parse ARM template: {source_path}", cause=exc) from exc
 
@@ -182,14 +182,14 @@ class ServiceNowCMDBParser(BaseParser):
         if source_path.suffix != ".json":
             return False
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
             return isinstance(data, dict) and ("result" in data or "cmdb_ci" in data)
         except Exception:
             return False
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
         except Exception as exc:
             raise ParserError(f"Could not parse CMDB export: {source_path}", cause=exc) from exc
 

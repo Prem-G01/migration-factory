@@ -16,7 +16,7 @@ from typing import Any
 from migration_factory.core.exceptions import ParserError
 from migration_factory.core.logging import get_logger
 from migration_factory.domain.enums import CloudProvider
-from migration_factory.parsers.base import BaseParser, ParsedResource, ParserResult, ParseWarning
+from migration_factory.parsers.base import BaseParser, ParsedResource, ParserResult, ParseWarning, read_text_smart
 from migration_factory.parsers.column_detection import build_resource_from_row
 
 logger = get_logger(__name__)
@@ -57,7 +57,7 @@ class CloudFormationParser(BaseParser):
         if source_path.suffix not in {".json", ".yaml", ".yml", ".template"}:
             return False
         try:
-            text = source_path.read_text(encoding="utf-8")
+            text = read_text_smart(source_path)
             data = json.loads(text) if source_path.suffix == ".json" else _safe_yaml_load(text)
             return isinstance(data, dict) and ("AWSTemplateFormatVersion" in data or "Resources" in data)
         except Exception:
@@ -65,7 +65,7 @@ class CloudFormationParser(BaseParser):
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            text = source_path.read_text(encoding="utf-8")
+            text = read_text_smart(source_path)
             template = json.loads(text) if source_path.suffix == ".json" else _safe_yaml_load(text)
         except Exception as exc:
             raise ParserError(
@@ -155,7 +155,7 @@ class JSONInventoryParser(BaseParser):
         if source_path.suffix != ".json":
             return False
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
             # Must be a dict with an "inventory" or "resources" key containing a list
             return isinstance(data, dict) and (
                 isinstance(data.get("inventory"), list) or isinstance(data.get("resources"), list)
@@ -165,7 +165,7 @@ class JSONInventoryParser(BaseParser):
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
         except Exception as exc:
             raise ParserError(f"Could not parse JSON: {source_path}", cause=exc) from exc
 
@@ -209,9 +209,11 @@ class CSVInventoryParser(BaseParser):
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            # utf-8-sig strips a leading BOM (common in Excel-exported CSVs)
-            # instead of leaving it glued to the first header's name.
-            text = source_path.read_text(encoding="utf-8-sig")
+            # read_text_smart strips a leading UTF-8 BOM (common in
+            # Excel-exported CSVs) and correctly decodes UTF-16 (PowerShell's
+            # `>` redirect) instead of either mangling the first header or
+            # crashing with a UnicodeDecodeError.
+            text = read_text_smart(source_path)
         except OSError as exc:
             raise ParserError(f"Could not read CSV: {source_path}", cause=exc) from exc
 
@@ -249,14 +251,14 @@ class TerraformPlanParser(BaseParser):
         if source_path.suffix != ".json":
             return False
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
             return isinstance(data, dict) and "resource_changes" in data
         except Exception:
             return False
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
         except Exception as exc:
             raise ParserError(f"Could not parse Terraform plan: {source_path}", cause=exc) from exc
 
@@ -334,7 +336,7 @@ class AWSCLIOutputParser(BaseParser):
         if source_path.suffix != ".json":
             return False
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
         except Exception:
             return False
 
@@ -346,7 +348,7 @@ class AWSCLIOutputParser(BaseParser):
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
         except Exception as exc:
             raise ParserError(f"Could not parse AWS CLI JSON output: {source_path}", cause=exc) from exc
 
@@ -649,14 +651,14 @@ class GCPCLIOutputParser(BaseParser):
         if source_path.suffix != ".json":
             return False
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
         except Exception:
             return False
         return self._classify(data) is not None
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            data = json.loads(source_path.read_text(encoding="utf-8"))
+            data = json.loads(read_text_smart(source_path))
         except Exception as exc:
             raise ParserError(f"Could not parse gcloud JSON output: {source_path}", cause=exc) from exc
 

@@ -14,7 +14,7 @@ from typing import Any
 from migration_factory.core.exceptions import ParserError
 from migration_factory.core.logging import get_logger
 from migration_factory.domain.enums import CloudProvider
-from migration_factory.parsers.base import BaseParser, ParsedResource, ParserResult, ParseWarning
+from migration_factory.parsers.base import BaseParser, ParsedResource, ParserResult, ParseWarning, read_text_smart
 from migration_factory.parsers.column_detection import build_resource_from_row
 
 logger = get_logger(__name__)
@@ -44,8 +44,7 @@ class TerraformHCLParser(BaseParser):
             ) from exc
 
         try:
-            with source_path.open(encoding="utf-8") as f:
-                parsed = hcl2.load(f)
+            parsed = hcl2.loads(read_text_smart(source_path))
         except Exception as exc:
             raise ParserError(
                 f"Could not parse HCL file: {source_path}",
@@ -120,14 +119,14 @@ class TerraformLogParser(BaseParser):
         if source_path.suffix not in {".log", ".txt"}:
             return False
         try:
-            text = source_path.read_text(encoding="utf-8")[:2000]
+            text = read_text_smart(source_path)[:2000]
             return "Terraform" in text and ("Plan:" in text or "Apply" in text or "Refreshing state" in text)
         except Exception:
             return False
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            text = source_path.read_text(encoding="utf-8")
+            text = read_text_smart(source_path)
         except OSError as exc:
             raise ParserError(f"Could not read log file: {source_path}", cause=exc) from exc
 

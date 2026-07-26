@@ -30,7 +30,7 @@ from typing import Any
 from migration_factory.core.exceptions import ParserError
 from migration_factory.core.logging import get_logger
 from migration_factory.domain.enums import CloudProvider
-from migration_factory.parsers.base import BaseParser, ParsedResource, ParserResult, ParseWarning
+from migration_factory.parsers.base import BaseParser, ParsedResource, ParserResult, ParseWarning, read_text_smart
 
 logger = get_logger(__name__)
 
@@ -63,16 +63,14 @@ class TerraformStateParser(BaseParser):
         if source_path.suffix not in {".tfstate", ".json"}:
             return False
         try:
-            with source_path.open(encoding="utf-8") as f:
-                payload = json.load(f)
-        except (OSError, json.JSONDecodeError):
+            payload = json.loads(read_text_smart(source_path))
+        except Exception:
             return False
         return isinstance(payload, dict) and "format_version" in payload and "resources" in payload
 
     def parse(self, source_path: Path) -> ParserResult:
         try:
-            with source_path.open(encoding="utf-8") as f:
-                state: dict[str, Any] = json.load(f)
+            state: dict[str, Any] = json.loads(read_text_smart(source_path))
         except OSError as exc:
             raise ParserError(
                 f"Could not read Terraform state file: {source_path}",
