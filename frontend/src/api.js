@@ -45,3 +45,14 @@ export const getHealth = async () => {
   const { data } = await api.get('/api/v1/health')
   return data
 }
+
+export const discoverAws = async (region) => {
+  const { data } = await api.get('/api/v1/discover/aws', { params: { region } })
+  return data
+}
+
+export const analyzeRawData = async (rawData, target) => {
+  const blob = new Blob([JSON.stringify(rawData)], { type: 'application/json' })
+  const file = new File([blob], 'discovered.json', { type: 'application/json' })
+  return analyzeFile(file, target)
+}

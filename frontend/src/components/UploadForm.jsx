@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { analyzeFile } from '../api'
+import { analyzeFile, analyzeRawData, discoverAws } from '../api'
 
 const TARGETS = [
   { value: 'gcp', label: '☁️ Migrate to GCP', desc: 'AWS → GCP' },
@@ -8,12 +8,45 @@ const TARGETS = [
 ]
 
 export default function UploadForm({ onResult }) {
+  const [mode, setMode] = useState('upload') // 'upload' | 'discover'
   const [file, setFile] = useState(null)
   const [target, setTarget] = useState('gcp')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [dragging, setDragging] = useState(false)
   const inputRef = useRef()
+
+  const [region, setRegion] = useState('us-east-1')
+  const [discovering, setDiscovering] = useState(false)
+  const [discovered, setDiscovered] = useState(null)
+
+  const handleDiscover = async () => {
+    setDiscovering(true)
+    setError('')
+    setDiscovered(null)
+    try {
+      const result = await discoverAws(region)
+      setDiscovered(result)
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Discovery failed')
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const handleAnalyzeDiscovered = async () => {
+    if (!discovered?.raw_data) return
+    setLoading(true)
+    setError('')
+    try {
+      const result = await analyzeRawData(discovered.raw_data, target)
+      onResult(result)
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Analysis failed')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const handleFile = (f) => {
     if (!f) return
@@ -60,7 +93,59 @@ export default function UploadForm({ onResult }) {
         </div>
 
         <div className="bg-gray-900 rounded-2xl p-8 shadow-xl border border-gray-800">
-          {/* Drop zone */}
+          {/* Mode toggle */}
+          <div className="grid grid-cols-2 gap-2 mb-6 p-1 bg-gray-800 rounded-xl">
+            <button
+              onClick={() => setMode('upload')}
+              className={`py-2 rounded-lg text-sm font-medium transition-all
+                ${mode === 'upload' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            >
+              📁 Upload File
+            </button>
+            <button
+              onClick={() => setMode('discover')}
+              className={`py-2 rounded-lg text-sm font-medium transition-all
+                ${mode === 'discover' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            >
+              🔎 Discover Live
+            </button>
+          </div>
+
+          {mode === 'discover' ? (
+            <div className="mb-6">
+              <label className="block text-gray-400 text-sm font-medium mb-3">
+                AWS Region
+              </label>
+              <input
+                type="text"
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                placeholder="us-east-1"
+                className="w-full px-4 py-3 rounded-xl bg-gray-800 border border-gray-700 text-white
+                  placeholder-gray-500 mb-4 focus:outline-none focus:border-blue-500"
+              />
+              <button
+                onClick={handleDiscover}
+                disabled={discovering}
+                className="w-full py-3 rounded-xl font-semibold text-white transition-all
+                  bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500"
+              >
+                {discovering ? '⏳ Discovering...' : '🔎 Discover AWS Infrastructure'}
+              </button>
+
+              {discovered && (
+                <div className="mt-4 p-4 rounded-xl bg-gray-800 border border-gray-700">
+                  <p className="text-white font-medium">
+                    Found {discovered.resources_discovered} resources in {discovered.region}
+                  </p>
+                  <p className="text-gray-400 text-sm mt-1">
+                    {discovered.resource_types?.join(', ')}
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : (
+          /* Drop zone */
           <div
             onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
             onDragLeave={() => setDragging(false)}
@@ -97,6 +182,7 @@ export default function UploadForm({ onResult }) {
               </div>
             )}
           </div>
+          )}
 
           {/* Target selector */}
           <div className="mb-6">
@@ -129,8 +215,8 @@ export default function UploadForm({ onResult }) {
 
           {/* Submit */}
           <button
-            onClick={handleSubmit}
-            disabled={loading || !file}
+            onClick={mode === 'discover' ? handleAnalyzeDiscovered : handleSubmit}
+            disabled={loading || (mode === 'discover' ? !discovered : !file)}
             className="w-full py-4 rounded-xl font-semibold text-white transition-all
               bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700
               disabled:text-gray-500 disabled:cursor-not-allowed"
@@ -145,6 +231,8 @@ export default function UploadForm({ onResult }) {
                 </svg>
                 Analyzing infrastructure...
               </span>
+            ) : mode === 'discover' && discovered ? (
+              `🚀 Analyze ${discovered.resources_discovered} Resources → ${target === 'gcp' ? 'GCP' : target === 'aws' ? 'AWS' : 'Report'}`
             ) : (
               '🚀 Analyze Infrastructure'
             )}

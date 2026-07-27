@@ -74,6 +74,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Shorthand for --mode analyze (assessment/security/compliance/cost, no Terraform output).",
     )
 
+    # ── workflow ────────────────────────────────────────────────────────────
+    workflow = subparsers.add_parser("workflow", help="Run a predefined workflow (see workflow/engine.py)")
+    workflow.add_argument(
+        "name",
+        choices=["discovery", "assessment", "migration", "validation", "security",
+                 "compliance", "terraform", "reporting", "plugin"],
+    )
+    workflow.add_argument("source_path", type=Path)
+    workflow.add_argument("--target", choices=["gcp", "aws"], default="gcp")
+    workflow.add_argument("--output", type=Path, default=None)
+
     return parser
 
 
@@ -87,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "poc":
         return _run_poc(args, settings)
+
+    if args.command == "workflow":
+        return _run_workflow(args, settings)
 
     return 1
 
@@ -118,6 +132,195 @@ def _run_ingest(args: argparse.Namespace, settings: Settings) -> int:
             file=sys.stderr,
         )
     return 0
+
+
+# ── workflow ─────────────────────────────────────────────────────────────────
+#
+# WorkflowEngine ships with zero registered stage handlers -- PREDEFINED_WORKFLOWS
+# is just a catalog of stage *names* per workflow. These handlers thread a shared
+# context dict through the real engines so `migration-factory workflow <name>`
+# actually does something, rather than reporting every stage "skipped: no
+# handler registered". Coverage is intentionally partial: cloud_discovery,
+# terraform_validate/plan/apply, business_impact/tech_debt/readiness, the
+# granular report_* variants, and the plugin-introspection stages have no
+# handler here (see the printed per-stage status for what ran vs. was skipped).
+# terraform_apply in particular is deliberately never wired to a real
+# `terraform apply` -- this tool generates Terraform for a human to review,
+# it does not auto-deploy.
+
+
+def _wf_parse(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.pipeline import IngestionPipeline
+
+    ingestion = IngestionPipeline(settings=get_settings()).run(ctx["source_path"])
+    return {"ingestion": ingestion, "graph": ingestion.graph}
+
+
+def _wf_normalize(ctx: dict[str, Any]) -> dict[str, Any]:
+    # Parsing (above) already maps ParsedResource -> CanonicalResource in one
+    # call -- normalization has already happened by the time this stage runs.
+    return {}
+
+
+def _wf_enrich(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.discovery.engine import DiscoveryEngine
+
+    DiscoveryEngine().enrich(ctx["graph"])
+    return {}
+
+
+def _wf_knowledge_graph(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.knowledge_graph.engine import KnowledgeGraphEngine
+
+    return {"knowledge_graph": KnowledgeGraphEngine().analyze(ctx["graph"])}
+
+
+def _wf_translate(ctx: dict[str, Any]) -> dict[str, Any]:
+    from collections import Counter
+
+    from migration_factory.domain.enums import CloudProvider
+    from migration_factory.translation.engine import TranslationEngine
+    from migration_factory.translation.matrix import load_builtin_matrix
+
+    graph = ctx["graph"]
+    provider_counts = Counter(r.source_provider.value for r in graph.resources.values())
+    source_provider = CloudProvider(provider_counts.most_common(1)[0][0]) if provider_counts else CloudProvider.AWS
+    target_provider = ctx.get("target_provider", CloudProvider.GCP)
+
+    if source_provider is target_provider:
+        translation = TranslationEngine.build_identity_report(graph, source_provider)
+    else:
+        matrix = load_builtin_matrix(source_provider, target_provider)
+        translation = TranslationEngine(matrix=matrix).translate(graph)
+    return {"translation": translation, "source_provider": source_provider, "target_provider": target_provider}
+
+
+def _wf_assess(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.assessment.engine import AssessmentEngine
+
+    return {"assessment": AssessmentEngine().assess(ctx["graph"], ctx["translation"])}
+
+
+def _wf_validate(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.validation.engine import ValidationEngine
+
+    return {"validation": ValidationEngine().validate(ctx["graph"])}
+
+
+def _wf_security(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.security.engine import SecurityEngine
+
+    return {"security": SecurityEngine().analyze(ctx["graph"])}
+
+
+def _wf_compliance(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.compliance.engine import ComplianceEngine
+
+    return {"compliance": ComplianceEngine().evaluate(ctx["graph"])}
+
+
+def _wf_policy(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.policy.engine import PolicyEngine
+
+    return {"policy": PolicyEngine().evaluate(ctx["graph"])}
+
+
+def _wf_finops(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.finops.engine import FinOpsEngine
+
+    return {"finops": FinOpsEngine(target_provider=ctx["target_provider"]).analyze(ctx["graph"])}
+
+
+def _wf_terraform_generate(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.terraform_gen.engine import TerraformGenerator
+
+    # The "terraform" workflow runs terraform_generate with no prior
+    # "translate" stage -- compute it here if a standalone run didn't
+    # already populate it, instead of crashing on a missing key.
+    extra: dict[str, Any] = {}
+    translation = ctx.get("translation")
+    if translation is None:
+        extra = _wf_translate(ctx)
+        translation = extra["translation"]
+
+    gen = TerraformGenerator(target_provider=ctx["target_provider"], project_id="workflow-run")
+    report = gen.generate(ctx["graph"], translation)
+    output_dir = ctx.get("output")
+    if output_dir:
+        gen.write(report, output_dir / "terraform")
+    return {**extra, "terraform": report}
+
+
+def _wf_report(ctx: dict[str, Any]) -> dict[str, Any]:
+    from migration_factory.reporting.engine import ReportingEngine
+
+    report = ReportingEngine().generate(
+        assessment=ctx.get("assessment"),
+        translation=ctx.get("translation"),
+        security=ctx.get("security"),
+        compliance=ctx.get("compliance"),
+        finops=ctx.get("finops"),
+        validation=ctx.get("validation"),
+        terraform=ctx.get("terraform"),
+    )
+    return {"report": report}
+
+
+_WORKFLOW_HANDLERS: dict[str, Any] = {
+    "parse": _wf_parse,
+    "normalize": _wf_normalize,
+    "enrich": _wf_enrich,
+    "knowledge_graph": _wf_knowledge_graph,
+    "translate": _wf_translate,
+    "assess": _wf_assess,
+    "validate": _wf_validate,
+    "security": _wf_security,
+    "compliance": _wf_compliance,
+    "policy": _wf_policy,
+    "finops": _wf_finops,
+    "terraform_generate": _wf_terraform_generate,
+    "report": _wf_report,
+}
+
+
+def _run_workflow(args: argparse.Namespace, settings: Settings) -> int:
+    from migration_factory.domain.enums import CloudProvider
+    from migration_factory.pipeline import IngestionPipeline
+    from migration_factory.workflow.engine import PREDEFINED_WORKFLOWS, WorkflowEngine
+
+    workflow_def = PREDEFINED_WORKFLOWS[args.name]
+    print(f"Running workflow: {args.name}")
+    print(f"Steps: {workflow_def.stages}")
+
+    try:
+        ingestion = IngestionPipeline(settings=settings).run(args.source_path)
+    except MigrationFactoryError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    context: dict[str, Any] = {
+        "source_path": args.source_path,
+        "target": args.target,
+        "output": args.output,
+        "ingestion": ingestion,
+        "graph": ingestion.graph,
+        "target_provider": CloudProvider.GCP if args.target == "gcp" else CloudProvider.AWS,
+    }
+
+    engine = WorkflowEngine()
+    for stage_name, handler in _WORKFLOW_HANDLERS.items():
+        engine.register_stage(stage_name, handler)
+
+    result = engine.execute(workflow_def, context=context)
+
+    print(f"\nWorkflow '{result.workflow_name}': {result.status.value}")
+    print(f"Completed: {result.completed_stages}  Failed: {result.failed_stages}  Total: {len(result.stage_results)}")
+    for sr in result.stage_results:
+        icon = {"completed": "✓", "failed": "✗", "skipped": "○"}.get(sr.status.value, "?")
+        note = f" — {sr.error}" if sr.error else ""
+        print(f"  {icon} {sr.stage_name} ({sr.duration_seconds}s){note}")
+
+    return 0 if result.status.value != "failed" else 1
 
 
 # ── poc ──────────────────────────────────────────────────────────────────────
@@ -169,6 +372,7 @@ def _poc_pipeline(
     box: object,
     mode: str = "migrate",
 ) -> None:
+    import time
     from collections import Counter
 
     from rich import box as rich_box
@@ -187,10 +391,14 @@ def _poc_pipeline(
     from migration_factory.core.config import get_settings
     from migration_factory.discovery.engine import DiscoveryEngine
     from migration_factory.domain.enums import CloudProvider
+    from migration_factory.drift.engine import DriftDetectionEngine
+    from migration_factory.events.engine import Event, EventBus, EventType, NotificationChannel, NotificationEngine
     from migration_factory.finops.engine import FinOpsEngine
     from migration_factory.knowledge_graph.engine import KnowledgeGraphEngine
+    from migration_factory.metrics.collector import MetricsCollector
     from migration_factory.pipeline import IngestionPipeline
     from migration_factory.planner.engine import MigrationPlanner
+    from migration_factory.policy.engine import PolicyEngine
     from migration_factory.reporting.engine import ReportingEngine
     from migration_factory.rollback.engine import RollbackPlanner
     from migration_factory.security.engine import SecurityEngine
@@ -204,6 +412,21 @@ def _poc_pipeline(
     source_provider = CloudProvider.AWS
     target_provider = CloudProvider.GCP if target_cloud == "gcp" else CloudProvider.AWS
 
+    metrics = MetricsCollector()
+    pipeline_start = time.perf_counter()
+
+    event_bus = EventBus()
+    notifier = NotificationEngine()
+    event_bus.subscribe(
+        EventType.PIPELINE_COMPLETED,
+        lambda e: notifier.notify(
+            NotificationChannel.LOG,
+            subject="Migration Factory: pipeline completed",
+            body=f"{e.data.get('direction')}: {e.data.get('total_resources')} resources, "
+            f"${e.data.get('savings')}/mo savings",
+        ),
+    )
+
     stages = [
         ("📥  Parsing infrastructure",        "Ingestion"),
         ("🔍  Enriching metadata",            "Discovery"),
@@ -214,9 +437,11 @@ def _poc_pipeline(
         ("📋  Compliance evaluation",         "Compliance"),
         ("💰  FinOps analysis",               "FinOps"),
         ("✅  Validation",                    "Validation"),
+        ("🔬  Drift baseline",                "Drift Analysis"),
         ("📅  Migration planning",            "Planning"),
         ("🏗️   Generating Terraform",         "Terraform Gen"),
         ("📄  Generating reports",            "Reporting"),
+        ("🤖  AI analysis",                   "AI Analysis"),
     ]
     if mode != "migrate":
         stages = [(label, key) for label, key in stages if key != "Terraform Gen"]
@@ -233,6 +458,7 @@ def _poc_pipeline(
 
         for label, key in stages:
             task = progress.add_task(label, total=None)
+            stage_start = time.perf_counter()
 
             # ── 1. Ingest ─────────────────────────────────────────────────
             if key == "Ingestion":
@@ -252,6 +478,12 @@ def _poc_pipeline(
                     # running a real cross-cloud capability matrix against
                     # whatever --target happens to default to.
                     target_provider = source_provider
+
+                event_bus.publish(Event(
+                    event_type=EventType.PARSING_COMPLETED,
+                    source="cli",
+                    data={"resources": len(ingestion.graph.resources)},
+                ))
 
             # ── 2. Discovery / Enrichment ─────────────────────────────────
             elif key == "Discovery":
@@ -288,9 +520,30 @@ def _poc_pipeline(
                 results["tech_debt"] = TechnicalDebtAnalyzer().analyze(ingestion.graph, translation)
                 results["readiness"] = ReadinessAssessor().assess(ingestion.graph, assessment, translation)
 
+                event_bus.publish(Event(
+                    event_type=EventType.ASSESSMENT_COMPLETED,
+                    source="cli",
+                    data={
+                        "complexity": assessment.overall_complexity_score,
+                        "risk": assessment.risk_level.value,
+                        "blockers": len(assessment.blockers),
+                    },
+                ))
+
             # ── 6. Security ───────────────────────────────────────────────
             elif key == "Security":
-                results["security"] = SecurityEngine().analyze(results["ingestion"].graph)
+                graph = results["ingestion"].graph
+                results["security"] = SecurityEngine().analyze(graph)
+
+                from migration_factory.ai.rca import RootCauseAnalyzer
+
+                policy_report = PolicyEngine().evaluate(graph)
+                results["policy"] = policy_report
+                results["rca"] = RootCauseAnalyzer().analyze(
+                    graph=graph,
+                    policy_report=policy_report,
+                    security_report=results["security"],
+                )
 
             # ── 7. Compliance ─────────────────────────────────────────────
             elif key == "Compliance":
@@ -305,6 +558,16 @@ def _poc_pipeline(
             # ── 9. Validation ─────────────────────────────────────────────
             elif key == "Validation":
                 results["validation"] = ValidationEngine().validate(results["ingestion"].graph)
+
+            # ── 9b. Drift baseline ────────────────────────────────────────
+            elif key == "Drift Analysis":
+                # No second (live/actual) state source exists in a single
+                # `poc` run, so this establishes a self-comparison baseline
+                # (desired == actual) rather than detecting real drift --
+                # real drift detection needs a live discovery re-scan to
+                # diff against, which is what /api/v1/discover/* is for.
+                graph = results["ingestion"].graph
+                results["drift"] = DriftDetectionEngine().detect(desired=graph, actual=graph)
 
             # ── 10. Planning ──────────────────────────────────────────────
             elif key == "Planning":
@@ -326,6 +589,15 @@ def _poc_pipeline(
                 if output_dir:
                     tf_dir = output_dir / "terraform"
                     gen.write(results["terraform"], tf_dir)
+
+                event_bus.publish(Event(
+                    event_type=EventType.TERRAFORM_GENERATED,
+                    source="cli",
+                    data={
+                        "files": len(results["terraform"].files),
+                        "resources": results["terraform"].generated_resources,
+                    },
+                ))
 
             # ── 12. Reporting ─────────────────────────────────────────────
             elif key == "Reporting":
@@ -351,6 +623,25 @@ def _poc_pipeline(
                         generate_mermaid_diagram(results["ingestion"].graph), encoding="utf-8"
                     )
 
+            # ── 13. AI Analysis ────────────────────────────────────────────
+            elif key == "AI Analysis":
+                from migration_factory.ai.engine import AIEngine
+
+                ai_engine = AIEngine()
+                results["ai_mode"] = "ai" if ai_engine.is_available else "rule_based"
+
+                graph = results["ingestion"].graph
+                translation = results["translation"]
+                assessment = results["assessment"]
+                cost_summary = results["finops"].cost_summary
+
+                results["ai_risks"] = ai_engine.analyze_migration_risks(graph, translation, assessment)
+                results["ai_optimizations"] = ai_engine.suggest_optimizations(
+                    graph, translation, cost_summary.source_monthly_total, cost_summary.target_monthly_total
+                )
+                results["ai_summary"] = ai_engine.generate_architecture_summary(graph)
+
+            metrics.histogram("stage_duration_seconds", time.perf_counter() - stage_start, stage=key)
             progress.update(task, completed=True)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -543,6 +834,32 @@ def _poc_pipeline(
 
         console.print(sec_table)
 
+    # ── Root Cause Analysis ────────────────────────────────────────────────
+    rca_report = results.get("rca")
+    if rca_report and rca_report.findings:
+        from rich.markup import escape
+
+        rca_table = Table(
+            title=f"Root Cause Analysis ({rca_report.total_findings} findings)",
+            box=rich_box.SIMPLE_HEAD, title_style="bold magenta",
+        )
+        rca_table.add_column("Severity", width=10)
+        rca_table.add_column("Finding", min_width=24)
+        rca_table.add_column("Root Cause", min_width=30)
+        rca_table.add_column("Remediation")
+
+        rca_sev_colors = {"critical": "bold red", "high": "red", "medium": "yellow", "low": "dim"}
+        for finding in rca_report.findings[:8]:
+            sc = rca_sev_colors.get(finding.severity.value, "white")
+            rca_table.add_row(
+                f"[{sc}]{finding.severity.value.upper()}[/]",
+                escape(finding.title[:40]),
+                escape(finding.root_cause[:50]),
+                escape(finding.remediation_steps[0][:50]) if finding.remediation_steps else "—",
+            )
+        console.print()
+        console.print(rca_table)
+
     # ── Blockers ──────────────────────────────────────────────────────────
     if assessment.blockers:
         console.print()
@@ -617,6 +934,42 @@ def _poc_pipeline(
         border_style="cyan",
     ))
 
+    # ── Drift baseline ─────────────────────────────────────────────────────
+    drift = results.get("drift")
+    if drift:
+        console.print()
+        console.print(f"[dim]Drift baseline established: {drift.total_resources_checked} resources tracked[/dim]")
+        if not drift.drift_detected:
+            console.print(
+                "[dim]No drift detected against baseline (self-comparison — "
+                "compare a live /api/v1/discover/* scan for real drift)[/dim]"
+            )
+
+    # ── AI Insights ────────────────────────────────────────────────────────
+    ai_risks = results.get("ai_risks")
+    ai_opts = results.get("ai_optimizations")
+    ai_sum = results.get("ai_summary")
+
+    if ai_risks or ai_opts or ai_sum:
+        from rich.markup import escape
+
+        ai_content = ""
+        if ai_sum and ai_sum.content:
+            ai_content += f"[bold]Architecture:[/bold]\n{escape(ai_sum.content[:300])}\n\n"
+        if ai_risks and ai_risks.content:
+            ai_content += f"[bold]Key Risks:[/bold]\n{escape(ai_risks.content[:400])}\n\n"
+        if ai_opts and ai_opts.content:
+            ai_content += f"[bold]Optimizations:[/bold]\n{escape(ai_opts.content[:300])}"
+
+        if ai_content.strip():
+            mode_label = "🤖 AI-Powered" if results.get("ai_mode") == "ai" else "🔍 Rule-based"
+            console.print()
+            console.print(Panel(
+                ai_content.strip(),
+                title=f"[bold magenta]AI Analysis ({mode_label})[/bold magenta]",
+                border_style="magenta",
+            ))
+
     # ── Output files ──────────────────────────────────────────────────────
     if output_dir:
         console.print()
@@ -634,7 +987,25 @@ def _poc_pipeline(
             border_style="green",
         ))
 
+    total_elapsed = time.perf_counter() - pipeline_start
+    metrics.gauge("pipeline_duration_seconds", total_elapsed)
+    metrics.gauge("pipeline_resource_count", len(ingestion.graph.resources))
+
+    event_bus.publish(Event(
+        event_type=EventType.PIPELINE_COMPLETED,
+        source="cli",
+        data={
+            "total_resources": len(ingestion.graph.resources),
+            "savings": s.monthly_savings,
+            "direction": direction,
+        },
+    ))
+
     console.print()
+    console.print(
+        f"[dim]Pipeline: {total_elapsed:.2f}s | "
+        f"Avg per resource: {total_elapsed / max(1, len(ingestion.graph.resources)) * 1000:.0f}ms[/dim]"
+    )
     console.print(Panel.fit(
         f"[bold green]POC Complete[/bold green]  "
         f"[dim]{direction} · "

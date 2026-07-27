@@ -9,7 +9,9 @@ an API process restart; schema changes go through Alembic (`alembic/`).
 from __future__ import annotations
 
 import io
+import json
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -24,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from migration_factory.ai.engine import AIEngine
 from migration_factory.api.database import MigrationRun, get_run, get_session, save_run
 from migration_factory.api.database import delete_run as db_delete_run
 from migration_factory.api.database import list_runs as db_list_runs
@@ -33,6 +36,7 @@ from migration_factory.core.config import get_settings
 from migration_factory.core.exceptions import MigrationFactoryError, ParserError
 from migration_factory.discovery.engine import DiscoveryEngine
 from migration_factory.domain.enums import CloudProvider
+from migration_factory.events.engine import Event, EventBus, EventType
 from migration_factory.finops.engine import FinOpsEngine
 from migration_factory.knowledge_graph.engine import KnowledgeGraphEngine
 from migration_factory.pipeline import IngestionPipeline
@@ -44,6 +48,8 @@ from migration_factory.terraform_gen.engine import GeneratedFile, TerraformGener
 from migration_factory.translation.engine import TranslationEngine
 from migration_factory.translation.matrix import load_builtin_matrix
 from migration_factory.validation.engine import ValidationEngine
+
+_event_bus = EventBus()
 
 app = FastAPI(
     title="Migration Factory API",
@@ -137,6 +143,19 @@ def _run_pipeline(source_path: Path, source_filename: str, target: _Target | Non
     )
     html_report = ReportingEngine().to_html(migration_report)
 
+    ai_engine = AIEngine()
+    ai_risks = ai_engine.analyze_migration_risks(ingestion.graph, translation, assessment)
+    ai_optimizations = ai_engine.suggest_optimizations(
+        ingestion.graph, translation, finops.cost_summary.source_monthly_total, finops.cost_summary.target_monthly_total
+    )
+    ai_summary = ai_engine.generate_architecture_summary(ingestion.graph)
+    ai_analysis = {
+        "risks": ai_risks.content,
+        "optimizations": ai_optimizations.content,
+        "summary": ai_summary.content,
+        "mode": "ai" if ai_engine.is_available else "rule_based",
+    }
+
     direction = _direction_label(source_provider, target_provider)
     run_id = str(uuid.uuid4())
     duration_seconds = round(time.perf_counter() - started_at, 2)
@@ -191,7 +210,18 @@ def _run_pipeline(source_path: Path, source_filename: str, target: _Target | Non
         "rollback": rollback.model_dump(mode="json"),
         "terraform_available": terraform_zip_bytes is not None,
         "summary": summary,
+        "ai_analysis": ai_analysis,
     }
+
+    _event_bus.publish(Event(
+        event_type=EventType.PIPELINE_COMPLETED,
+        source="api",
+        data={
+            "total_resources": len(ingestion.graph.resources),
+            "savings": finops.cost_summary.monthly_savings,
+            "direction": direction,
+        },
+    ))
 
     return MigrationRun(
         id=run_id,
@@ -300,6 +330,89 @@ async def delete_run_endpoint(run_id: str, session: AsyncSession = Depends(get_s
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Unknown run_id: {run_id!r}")
     return {"deleted": True}
+
+
+def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=30)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=f"{args[0]!r} CLI not found on this machine") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=400, detail=f"{args[0]!r} CLI timed out after 30s") from exc
+
+
+@app.get("/api/v1/discover/aws")
+def discover_aws(region: str = "us-east-1") -> dict[str, Any]:
+    """Live AWS discovery: runs the AWS CLI directly (describe-instances +
+    describe-vpcs + describe-security-groups) instead of requiring a
+    pre-exported file upload. Plain `def`, not `async def` -- these are
+    blocking subprocess calls (up to 30s each); FastAPI runs sync route
+    functions in a worker thread so they don't block the event loop.
+    """
+    result = _run_cli(["aws", "ec2", "describe-instances", "--region", region, "--output", "json"])
+    if result.returncode != 0:
+        raise HTTPException(status_code=400, detail=f"AWS CLI failed: {result.stderr[:200]}")
+
+    combined = json.loads(result.stdout)
+    for extra_cmd in (
+        ["aws", "ec2", "describe-vpcs", "--region", region, "--output", "json"],
+        ["aws", "ec2", "describe-security-groups", "--region", region, "--output", "json"],
+    ):
+        extra_result = _run_cli(extra_cmd)
+        if extra_result.returncode == 0:
+            combined.update(json.loads(extra_result.stdout))
+
+    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False, encoding="utf-8") as f:
+        json.dump(combined, f)
+        tmp_path = Path(f.name)
+
+    try:
+        ingestion = IngestionPipeline(settings=get_settings()).run(tmp_path)
+        return {
+            "region": region,
+            "resources_discovered": len(ingestion.graph.resources),
+            "resource_types": sorted({r.source_type for r in ingestion.graph.resources.values()}),
+            "message": (
+                f"Discovered {len(ingestion.graph.resources)} resources. "
+                "POST /api/v1/analyze with this data to get a migration plan."
+            ),
+            # Handed back so a caller (e.g. the dashboard's Discover tab) can
+            # POST this straight to /api/v1/analyze as a file, without a
+            # second live AWS CLI round-trip just to re-fetch what we already
+            # have in hand.
+            "raw_data": combined,
+        }
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.get("/api/v1/discover/gcp")
+def discover_gcp(project_id: str, region: str = "us-central1") -> dict[str, Any]:
+    """Live GCP discovery via `gcloud compute instances list`. See
+    discover_aws's docstring for why this is a plain `def`.
+    """
+    result = _run_cli(
+        ["gcloud", "compute", "instances", "list", "--project", project_id, "--format", "json"]
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=400, detail=f"gcloud CLI failed: {result.stderr[:200]}")
+
+    instances = json.loads(result.stdout)
+    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False, encoding="utf-8") as f:
+        json.dump(instances, f)
+        tmp_path = Path(f.name)
+
+    try:
+        ingestion = IngestionPipeline(settings=get_settings()).run(tmp_path)
+        return {
+            "project_id": project_id,
+            "region": region,
+            "resources_discovered": len(ingestion.graph.resources),
+            "resource_types": sorted({r.source_type for r in ingestion.graph.resources.values()}),
+            "raw_data": instances,
+        }
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 @app.get("/api/v1/health")
