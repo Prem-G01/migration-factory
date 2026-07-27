@@ -16,7 +16,7 @@
 
 | Step | What happens |
 |------|-------------|
-| Upload `.tfstate` file | Auto-detected: AWS, GCP, or Azure |
+| Upload `.tfstate` file | Auto-detected: AWS or GCP |
 | Select target cloud | GCP, AWS, or Analyze Only |
 | Click Analyze | 12-stage pipeline runs (sub-second on the bundled sample fixtures) |
 | View results | Complexity score, risk, security, compliance, FinOps |
