@@ -1,6 +1,22 @@
 import { useState, useEffect } from 'react'
 import { getRuns, deleteRun } from '../api'
 
+const riskColor = (r) => ({ low: 'text-green bg-green-10', medium: 'text-yellow bg-yellow-10', high: 'text-red bg-red-10', critical: 'text-red bg-red-10' }[r] || 'text-text-secondary bg-raised')
+
+const directionAccent = (direction) => {
+  if (!direction) return 'border-l-border'
+  if (direction.startsWith('AWS') && direction.includes('GCP')) return 'border-l-cyan'
+  if (direction.startsWith('GCP') && direction.includes('AWS')) return 'border-l-orange'
+  return 'border-l-border'
+}
+
+const directionBadge = (direction) => {
+  if (!direction) return 'text-text-secondary bg-raised border-border'
+  if (direction.startsWith('AWS') && direction.includes('GCP')) return 'text-cyan bg-cyan-10 border-cyan/30'
+  if (direction.startsWith('GCP') && direction.includes('AWS')) return 'text-orange bg-orange-10 border-orange/30'
+  return 'text-text-secondary bg-raised border-border'
+}
+
 export default function HistoryPage({ onViewRun, onNewAnalysis }) {
   const [runs, setRuns] = useState([])
   const [loading, setLoading] = useState(true)
@@ -11,7 +27,7 @@ export default function HistoryPage({ onViewRun, onNewAnalysis }) {
     try {
       const data = await getRuns()
       setRuns(data.runs || [])
-    } catch (e) {
+    } catch {
       setError('Failed to load run history')
     } finally {
       setLoading(false)
@@ -24,106 +40,101 @@ export default function HistoryPage({ onViewRun, onNewAnalysis }) {
     if (!confirm('Delete this run?')) return
     try {
       await deleteRun(runId)
-      setRuns(runs.filter(r => r.run_id !== runId))
-    } catch (e) {
+      setRuns(runs.filter((r) => r.run_id !== runId))
+    } catch {
       alert('Failed to delete run')
     }
   }
 
-  const riskBadge = (r) => {
-    const colors = {
-      low: 'text-green-400 bg-green-900',
-      medium: 'text-yellow-400 bg-yellow-900',
-      high: 'text-red-400 bg-red-900'
-    }
-    return `px-2 py-0.5 rounded text-xs font-bold ${colors[r] || 'text-gray-400 bg-gray-800'}`
-  }
-
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
-      <div className="bg-gray-900 border-b border-gray-800 px-6 py-4
-        flex items-center justify-between">
-        <span className="text-xl font-bold">🏭 Migration Factory</span>
-        <button onClick={onNewAnalysis}
-          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-medium">
-          + New Analysis
+    <div className="min-h-screen bg-void text-text-primary">
+      <div className="sticky top-0 z-20 bg-surface border-b border-border px-6 py-3.5 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="text-lg">🏭</span>
+          <span className="font-semibold text-sm">Migration Factory</span>
+        </div>
+        <button
+          onClick={onNewAnalysis}
+          className="px-3 py-1.5 rounded-lg border border-border text-text-secondary hover:border-cyan hover:text-text-primary text-xs font-medium transition-colors"
+        >
+          New Analysis
         </button>
       </div>
 
       <div className="max-w-5xl mx-auto px-6 py-8">
-        <h2 className="text-xl font-semibold mb-6">Analysis History</h2>
+        <div className="flex items-center gap-3 mb-6">
+          <h2 className="text-lg font-semibold">Analysis History</h2>
+          {!loading && (
+            <span className="mono text-[11px] text-text-muted border border-border rounded-full px-2 py-0.5">
+              {runs.length} run{runs.length === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
 
-        {loading && (
-          <div className="text-center py-16 text-gray-500">Loading...</div>
-        )}
+        {loading && <div className="text-center py-16 text-text-muted mono text-sm">loading…</div>}
 
         {error && (
-          <div className="p-4 bg-red-900 border border-red-700 rounded-xl text-red-300">
-            {error}
-          </div>
+          <div className="p-4 bg-red-10 border border-red/30 rounded-xl text-red text-sm">{error}</div>
         )}
 
-        {!loading && runs.length === 0 && (
-          <div className="text-center py-16">
-            <div className="text-5xl mb-4">📭</div>
-            <p className="text-gray-400">No previous analyses.</p>
-            <button onClick={onNewAnalysis}
-              className="mt-4 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 font-medium">
-              Upload a file to get started
+        {!loading && !error && runs.length === 0 && (
+          <div className="text-center py-20 bg-surface border border-border rounded-xl">
+            <p className="mono text-text-secondary text-sm mb-2">$ migration-factory poc --help</p>
+            <p className="text-text-muted text-sm mb-6">No analyses found. Upload a file to get started.</p>
+            <button
+              onClick={onNewAnalysis}
+              className="px-5 py-2.5 rounded-lg font-medium text-sm transition-colors border"
+              style={{ background: 'linear-gradient(135deg, #00E5FF22, #00E5FF11)', borderColor: '#00E5FF44', color: '#00E5FF' }}
+            >
+              New Analysis →
             </button>
           </div>
         )}
 
-        {runs.length > 0 && (
-          <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+        {!loading && runs.length > 0 && (
+          <div className="bg-surface border border-border rounded-xl overflow-hidden">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-800 text-gray-500">
-                  <th className="text-left px-4 py-3">Direction</th>
-                  <th className="text-right px-4 py-3">Resources</th>
-                  <th className="text-left px-4 py-3">Risk</th>
-                  <th className="text-right px-4 py-3">Savings</th>
-                  <th className="text-right px-4 py-3">Duration</th>
-                  <th className="text-right px-4 py-3">Actions</th>
+                <tr className="text-text-muted text-xs mono uppercase tracking-wider">
+                  <th className="text-left px-4 py-3 font-medium">Direction</th>
+                  <th className="text-right px-4 py-3 font-medium">Resources</th>
+                  <th className="text-left px-4 py-3 font-medium">Risk</th>
+                  <th className="text-right px-4 py-3 font-medium">Savings</th>
+                  <th className="text-right px-4 py-3 font-medium">Duration</th>
+                  <th className="text-right px-4 py-3 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {runs.map((run) => (
-                  <tr key={run.run_id}
-                    className="border-b border-gray-800 last:border-0 hover:bg-gray-800">
-                    <td className="px-4 py-3 font-medium">
-                      {run.direction || 'Analysis'}
+                  <tr
+                    key={run.run_id}
+                    className={`border-l-2 ${directionAccent(run.direction)} border-b border-border last:border-b-0 hover:bg-raised transition-colors`}
+                  >
+                    <td className="px-4 py-3">
+                      <span className={`mono px-2 py-0.5 rounded-full text-[11px] border ${directionBadge(run.direction)}`}>
+                        {run.direction || 'Analysis'}
+                      </span>
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-400">
-                      {run.resources ?? '—'}
-                    </td>
+                    <td className="mono px-4 py-3 text-right text-text-secondary">{run.resources ?? '—'}</td>
                     <td className="px-4 py-3">
                       {run.risk_level && (
-                        <span className={riskBadge(run.risk_level)}>
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${riskColor(run.risk_level)}`}>
                           {run.risk_level.toUpperCase()}
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right text-green-400">
-                      {run.monthly_savings != null
-                        ? `$${run.monthly_savings}/mo` : '—'}
+                    <td className="mono px-4 py-3 text-right text-green">
+                      {run.monthly_savings != null ? `$${run.monthly_savings}/mo` : '—'}
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-500">
-                      {run.duration_seconds != null
-                        ? `${run.duration_seconds.toFixed(1)}s` : '—'}
+                    <td className="mono px-4 py-3 text-right text-text-muted">
+                      {run.duration_seconds != null ? `${run.duration_seconds.toFixed(1)}s` : '—'}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <div className="flex gap-2 justify-end">
-                        <button
-                          onClick={() => onViewRun(run.run_id)}
-                          className="px-3 py-1 rounded bg-blue-800 hover:bg-blue-700
-                            text-blue-300 text-xs font-medium">
+                      <div className="flex gap-3 justify-end">
+                        <button onClick={() => onViewRun(run.run_id)} className="text-cyan hover:opacity-80 text-xs font-medium">
                           View
                         </button>
-                        <button
-                          onClick={() => handleDelete(run.run_id)}
-                          className="px-3 py-1 rounded bg-gray-800 hover:bg-red-900
-                            text-gray-400 hover:text-red-300 text-xs font-medium">
+                        <button onClick={() => handleDelete(run.run_id)} className="text-text-muted hover:text-red text-xs font-medium">
                           Delete
                         </button>
                       </div>

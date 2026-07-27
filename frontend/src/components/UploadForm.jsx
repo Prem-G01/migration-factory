@@ -1,11 +1,26 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { analyzeFile, analyzeRawData, discoverAws } from '../api'
 
 const TARGETS = [
-  { value: 'gcp', label: '☁️ Migrate to GCP', desc: 'AWS → GCP' },
-  { value: 'aws', label: '🔶 Migrate to AWS', desc: 'GCP → AWS' },
-  { value: 'analyze_only', label: '🔍 Analyze Only', desc: 'No migration' },
+  { value: 'gcp', direction: 'AWS → GCP', label: 'Migrate to GCP', accent: 'cyan' },
+  { value: 'aws', direction: 'GCP → AWS', label: 'Migrate to AWS', accent: 'orange' },
+  { value: 'analyze_only', direction: 'ANALYZE', label: 'Analyze Only', accent: 'gray' },
 ]
+
+const ACCENT_CLASSES = {
+  cyan: { border: 'border-cyan', bar: 'bg-cyan', label: 'text-cyan' },
+  orange: { border: 'border-orange', bar: 'bg-orange', label: 'text-orange' },
+  gray: { border: 'border-text-muted', bar: 'bg-[#8B949E]', label: 'text-text-secondary' },
+}
+
+function AnalyzingDots() {
+  const [dots, setDots] = useState('')
+  useEffect(() => {
+    const id = setInterval(() => setDots((d) => (d.length >= 3 ? '' : d + '.')), 350)
+    return () => clearInterval(id)
+  }, [])
+  return <span className="mono">Analyzing{dots}</span>
+}
 
 export default function UploadForm({ onResult }) {
   const [mode, setMode] = useState('upload') // 'upload' | 'discover'
@@ -14,39 +29,12 @@ export default function UploadForm({ onResult }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [dragging, setDragging] = useState(false)
+  const [justDropped, setJustDropped] = useState(false)
   const inputRef = useRef()
 
-  const [region, setRegion] = useState('us-east-1')
+  const [region, setRegion] = useState('')
   const [discovering, setDiscovering] = useState(false)
   const [discovered, setDiscovered] = useState(null)
-
-  const handleDiscover = async () => {
-    setDiscovering(true)
-    setError('')
-    setDiscovered(null)
-    try {
-      const result = await discoverAws(region)
-      setDiscovered(result)
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message || 'Discovery failed')
-    } finally {
-      setDiscovering(false)
-    }
-  }
-
-  const handleAnalyzeDiscovered = async () => {
-    if (!discovered?.raw_data) return
-    setLoading(true)
-    setError('')
-    try {
-      const result = await analyzeRawData(discovered.raw_data, target)
-      onResult(result)
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message || 'Analysis failed')
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const handleFile = (f) => {
     if (!f) return
@@ -58,6 +46,8 @@ export default function UploadForm({ onResult }) {
     }
     setFile(f)
     setError('')
+    setJustDropped(true)
+    setTimeout(() => setJustDropped(false), 650)
   }
 
   const handleDrop = (e) => {
@@ -80,163 +70,204 @@ export default function UploadForm({ onResult }) {
     }
   }
 
+  const handleDiscover = async () => {
+    setDiscovering(true)
+    setError('')
+    setDiscovered(null)
+    try {
+      const result = await discoverAws(region || 'us-east-1')
+      setDiscovered(result)
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Discovery failed')
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const handleAnalyzeDiscovered = async () => {
+    if (!discovered?.raw_data) return
+    setLoading(true)
+    setError('')
+    try {
+      const result = await analyzeRawData(discovered.raw_data, target)
+      onResult(result)
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Analysis failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const ready = mode === 'discover' ? !!discovered : !!file
+  const onSubmit = mode === 'discover' ? handleAnalyzeDiscovered : handleSubmit
+
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-6">
-      <div className="w-full max-w-lg">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">
-            🏭 Migration Factory
-          </h1>
-          <p className="text-gray-400">
-            AI-Powered Multi-Cloud Infrastructure Migration
+    <div className="min-h-screen bg-void flex items-center justify-center p-6">
+      <div className="w-full max-w-[520px]">
+        {/* Header */}
+        <div className="flex flex-col items-center mb-8 animate-fade-up">
+          <div className="flex items-center gap-2.5 mb-2">
+            <span
+              className="w-7 h-7 rounded flex items-center justify-center text-sm"
+              style={{ background: 'linear-gradient(135deg, #00E5FF33, #00E5FF11)', border: '1px solid #00E5FF44' }}
+            >
+              🏭
+            </span>
+            <h1 className="text-lg font-semibold text-text-primary tracking-tight">Migration Factory</h1>
+          </div>
+          <p className="mono text-[11px] text-text-muted tracking-wide">
+            aws → gcp · gcp → aws · analyze
           </p>
         </div>
 
-        <div className="bg-gray-900 rounded-2xl p-8 shadow-xl border border-gray-800">
-          {/* Mode toggle */}
-          <div className="grid grid-cols-2 gap-2 mb-6 p-1 bg-gray-800 rounded-xl">
+        {/* Card */}
+        <div className="bg-surface border border-border rounded-xl overflow-hidden animate-fade-up">
+          {/* Tabs */}
+          <div className="flex border-b border-border">
             <button
               onClick={() => setMode('upload')}
-              className={`py-2 rounded-lg text-sm font-medium transition-all
-                ${mode === 'upload' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors
+                ${mode === 'upload' ? 'border-cyan text-text-primary' : 'border-transparent text-text-muted hover:text-text-secondary'}`}
             >
-              📁 Upload File
+              Upload File
             </button>
             <button
               onClick={() => setMode('discover')}
-              className={`py-2 rounded-lg text-sm font-medium transition-all
-                ${mode === 'discover' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors
+                ${mode === 'discover' ? 'border-cyan text-text-primary' : 'border-transparent text-text-muted hover:text-text-secondary'}`}
             >
-              🔎 Discover Live
+              Discover Live
             </button>
           </div>
 
-          {mode === 'discover' ? (
-            <div className="mb-6">
-              <label className="block text-gray-400 text-sm font-medium mb-3">
-                AWS Region
-              </label>
-              <input
-                type="text"
-                value={region}
-                onChange={(e) => setRegion(e.target.value)}
-                placeholder="us-east-1"
-                className="w-full px-4 py-3 rounded-xl bg-gray-800 border border-gray-700 text-white
-                  placeholder-gray-500 mb-4 focus:outline-none focus:border-blue-500"
-              />
-              <button
-                onClick={handleDiscover}
-                disabled={discovering}
-                className="w-full py-3 rounded-xl font-semibold text-white transition-all
-                  bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500"
-              >
-                {discovering ? '⏳ Discovering...' : '🔎 Discover AWS Infrastructure'}
-              </button>
-
-              {discovered && (
-                <div className="mt-4 p-4 rounded-xl bg-gray-800 border border-gray-700">
-                  <p className="text-white font-medium">
-                    Found {discovered.resources_discovered} resources in {discovered.region}
-                  </p>
-                  <p className="text-gray-400 text-sm mt-1">
-                    {discovered.resource_types?.join(', ')}
-                  </p>
-                </div>
-              )}
-            </div>
-          ) : (
-          /* Drop zone */
-          <div
-            onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={handleDrop}
-            onClick={() => inputRef.current.click()}
-            className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-all mb-6
-              ${dragging ? 'border-blue-400 bg-blue-950' : 'border-gray-700 hover:border-gray-500 hover:bg-gray-800'}`}
-          >
-            <input
-              ref={inputRef}
-              type="file"
-              className="hidden"
-              accept=".tfstate,.json,.csv,.xlsx,.tf,.log,.yaml,.yml"
-              onChange={(e) => handleFile(e.target.files[0])}
-            />
-            <div className="text-4xl mb-3">
-              {file ? '✅' : '📁'}
-            </div>
-            {file ? (
-              <div>
-                <p className="text-white font-medium">{file.name}</p>
-                <p className="text-gray-400 text-sm mt-1">
-                  {(file.size / 1024).toFixed(1)} KB — click to change
-                </p>
-              </div>
-            ) : (
-              <div>
-                <p className="text-gray-300 font-medium">
-                  Drop your infrastructure file here
-                </p>
-                <p className="text-gray-500 text-sm mt-1">
-                  .tfstate .json .csv .xlsx .tf .yaml
-                </p>
-              </div>
-            )}
-          </div>
-          )}
-
-          {/* Target selector */}
-          <div className="mb-6">
-            <label className="block text-gray-400 text-sm font-medium mb-3">
-              Migration Target
-            </label>
-            <div className="grid grid-cols-3 gap-3">
-              {TARGETS.map(t => (
-                <button
-                  key={t.value}
-                  onClick={() => setTarget(t.value)}
-                  className={`p-3 rounded-xl border text-sm font-medium transition-all text-left
-                    ${target === t.value
-                      ? 'border-blue-500 bg-blue-900 text-white'
-                      : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-500'}`}
+          <div className="p-6">
+            {mode === 'upload' ? (
+              <div className={`rounded-xl mb-6 ${justDropped ? 'pulse-once' : ''}`}>
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={handleDrop}
+                  onClick={() => inputRef.current.click()}
+                  className={`animated-border rounded-xl p-10 text-center cursor-pointer transition-all
+                    ${dragging ? 'bg-cyan-10' : 'hover:opacity-90'}`}
+                  style={dragging ? { background: 'linear-gradient(#0d1a1f, #0d1a1f) padding-box, conic-gradient(from var(--angle), transparent 20%, var(--accent-cyan), transparent 80%) border-box' } : undefined}
                 >
-                  <div>{t.label}</div>
-                  <div className="text-xs opacity-70 mt-1">{t.desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Error */}
-          {error && (
-            <div className="mb-4 p-3 bg-red-900 border border-red-700 rounded-lg text-red-300 text-sm">
-              {error}
-            </div>
-          )}
-
-          {/* Submit */}
-          <button
-            onClick={mode === 'discover' ? handleAnalyzeDiscovered : handleSubmit}
-            disabled={loading || (mode === 'discover' ? !discovered : !file)}
-            className="w-full py-4 rounded-xl font-semibold text-white transition-all
-              bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700
-              disabled:text-gray-500 disabled:cursor-not-allowed"
-          >
-            {loading ? (
-              <span className="flex items-center justify-center gap-2">
-                <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10"
-                    stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor"
-                    d="M4 12a8 8 0 018-8v8z"/>
-                </svg>
-                Analyzing infrastructure...
-              </span>
-            ) : mode === 'discover' && discovered ? (
-              `🚀 Analyze ${discovered.resources_discovered} Resources → ${target === 'gcp' ? 'GCP' : target === 'aws' ? 'AWS' : 'Report'}`
+                  <input
+                    ref={inputRef}
+                    type="file"
+                    className="hidden"
+                    accept=".tfstate,.json,.csv,.xlsx,.tf,.log,.yaml,.yml"
+                    onChange={(e) => handleFile(e.target.files[0])}
+                  />
+                  <div className="text-4xl mb-3 text-text-muted">{file ? '✅' : '📁'}</div>
+                  {file ? (
+                    <div>
+                      <p className="mono text-cyan text-sm">{file.name}</p>
+                      <p className="text-text-secondary text-xs mt-1">
+                        {(file.size / 1024).toFixed(1)} KB — click to change
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="text-text-secondary font-medium">Drop infrastructure file here</p>
+                      <p className="mono text-text-muted text-[11px] mt-1">
+                        .tfstate .json .csv .xlsx .tf
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
             ) : (
-              '🚀 Analyze Infrastructure'
+              <div className="mb-6">
+                <label className="block text-text-muted text-[11px] mono uppercase tracking-wider mb-2">
+                  AWS Region
+                </label>
+                <input
+                  type="text"
+                  value={region}
+                  onChange={(e) => setRegion(e.target.value)}
+                  placeholder="us-east-1"
+                  className="mono w-full px-4 py-3 rounded-lg bg-raised border border-border text-text-primary
+                    placeholder-text-muted mb-4 focus:outline-none focus:border-cyan transition-colors"
+                />
+                <button
+                  onClick={handleDiscover}
+                  disabled={discovering}
+                  className="w-full py-3 rounded-lg font-medium transition-all border"
+                  style={
+                    discovering
+                      ? { background: 'var(--bg-raised)', color: 'var(--text-muted)', borderColor: 'var(--bg-border)', cursor: 'not-allowed' }
+                      : { background: 'linear-gradient(135deg, #00E5FF22, #00E5FF11)', borderColor: '#00E5FF44', color: '#00E5FF' }
+                  }
+                >
+                  {discovering ? <AnalyzingDots /> : '🔎 Discover Infrastructure'}
+                </button>
+
+                {discovered && (
+                  <div className="mt-5 p-5 rounded-xl bg-raised border border-border text-center animate-count">
+                    <div className="mono text-cyan text-4xl font-medium">{discovered.resources_discovered}</div>
+                    <div className="text-text-secondary text-xs mt-1">resources discovered</div>
+                    <div className="mono text-text-muted text-[11px] mt-2">
+                      {discovered.region} · {discovered.resource_types?.length ?? 0} resource types
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
-          </button>
+
+            {/* Target selector */}
+            <div className="mb-6">
+              <label className="block text-text-muted text-[11px] mono uppercase tracking-wider mb-3">
+                Migration Target
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {TARGETS.map((t) => {
+                  const a = ACCENT_CLASSES[t.accent]
+                  const selected = target === t.value
+                  return (
+                    <button
+                      key={t.value}
+                      onClick={() => setTarget(t.value)}
+                      className={`relative overflow-hidden text-left rounded-lg border p-3 transition-all
+                        ${selected ? `${a.border} bg-raised` : 'border-border bg-raised hover:border-text-muted'}`}
+                    >
+                      {selected && <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${a.bar}`} />}
+                      <div className={`mono text-[10px] tracking-wide ${selected ? a.label : 'text-text-muted'}`}>
+                        {t.direction}
+                      </div>
+                      <div className="text-[13px] font-semibold text-text-primary mt-1 leading-tight">
+                        {t.label}
+                      </div>
+                      <div className="text-xs mt-1.5 opacity-70">
+                        {t.value === 'gcp' ? '☁️ → 🔶' : t.value === 'aws' ? '🔶 → ☁️' : '🔍'}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {error && (
+              <div className="mb-4 p-3 bg-red-10 border border-red/30 rounded-lg text-red text-sm">
+                {error}
+              </div>
+            )}
+
+            <button
+              onClick={onSubmit}
+              disabled={loading || !ready}
+              className="w-full py-4 rounded-lg font-semibold transition-all border"
+              style={
+                loading || !ready
+                  ? { background: 'var(--bg-raised)', color: 'var(--text-muted)', borderColor: 'var(--bg-border)', cursor: 'not-allowed' }
+                  : { background: 'linear-gradient(135deg, #00E5FF22, #00E5FF11)', borderColor: '#00E5FF44', color: '#00E5FF' }
+              }
+              onMouseEnter={(e) => { if (!loading && ready) { e.currentTarget.style.borderColor = '#00E5FF'; e.currentTarget.style.color = '#E6EDF3' } }}
+              onMouseLeave={(e) => { if (!loading && ready) { e.currentTarget.style.borderColor = '#00E5FF44'; e.currentTarget.style.color = '#00E5FF' } }}
+            >
+              {loading ? <AnalyzingDots /> : mode === 'discover' ? '🚀 Analyze →' : '🚀 Analyze Infrastructure'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
