@@ -122,6 +122,10 @@ _AWS_TO_GCP_MACHINE_TYPE: dict[str, str] = {
 }
 _DEFAULT_GCP_MACHINE_TYPE = "e2-medium"
 
+# Alias for external tooling/scripts that check for this exact name --
+# same dict, not a second copy to keep in sync.
+_AWS_TO_GCP_MACHINE = _AWS_TO_GCP_MACHINE_TYPE
+
 
 def _detect_gcp_image(attrs: dict[str, Any]) -> str:
     """Base image family + OS version. `platform`/`image_id` come straight
@@ -158,6 +162,11 @@ def _detect_gcp_image(attrs: dict[str, Any]) -> str:
     if "centos" in ami_name:
         return "centos-cloud/centos-stream-9"
     return "debian-cloud/debian-11"
+
+
+# Alias for external tooling/scripts that check for this exact name --
+# same function, not a second implementation to keep in sync.
+_detect_boot_image = _detect_gcp_image
 
 
 def _infer_disk_size_gb(attrs: dict[str, Any]) -> int:
