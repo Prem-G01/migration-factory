@@ -48,21 +48,29 @@ _AWS_AZ_TO_GCP_ZONE: dict[str, str] = {
     "us-east-2a": "us-central1-a", "us-east-2b": "us-central1-b", "us-east-2c": "us-central1-c",
     # US West
     "us-west-1a": "us-west2-a", "us-west-1b": "us-west2-b",
-    "us-west-2a": "us-west1-a", "us-west-2b": "us-west1-b", "us-west-2c": "us-west1-c",
+    "us-west-2a": "us-west1-a", "us-west-2b": "us-west1-b",
+    "us-west-2c": "us-west1-c", "us-west-2d": "us-west1-c",
     # Asia Pacific
     "ap-south-1a": "asia-south1-a", "ap-south-1b": "asia-south1-b", "ap-south-1c": "asia-south1-c",
     "ap-southeast-1a": "asia-southeast1-a", "ap-southeast-1b": "asia-southeast1-b",
+    "ap-southeast-1c": "asia-southeast1-c", "ap-southeast-2a": "australia-southeast1-a",
     "ap-northeast-1a": "asia-northeast1-a", "ap-northeast-1b": "asia-northeast1-b",
+    "ap-northeast-1c": "asia-northeast1-c",
     # Europe
-    "eu-west-1a": "europe-west1-b", "eu-west-1b": "europe-west1-c",
+    "eu-west-1a": "europe-west1-b", "eu-west-1b": "europe-west1-c", "eu-west-1c": "europe-west1-d",
+    "eu-west-2a": "europe-west2-a",
     "eu-central-1a": "europe-west3-a", "eu-central-1b": "europe-west3-b",
+    # Canada / South America
+    "ca-central-1a": "northamerica-northeast1-a",
+    "sa-east-1a": "southamerica-east1-a",
 }
 
 _AWS_REGION_TO_GCP_REGION: dict[str, str] = {
     "us-east-1": "us-east4", "us-east-2": "us-central1",
     "us-west-1": "us-west2", "us-west-2": "us-west1",
     "ap-south-1": "asia-south1", "ap-southeast-1": "asia-southeast1",
-    "ap-northeast-1": "asia-northeast1", "eu-west-1": "europe-west1",
+    "ap-southeast-2": "australia-southeast1",
+    "ap-northeast-1": "asia-northeast1", "eu-west-1": "europe-west1", "eu-west-2": "europe-west2",
     "eu-central-1": "europe-west3", "ca-central-1": "northamerica-northeast1",
     "sa-east-1": "southamerica-east1", "ap-east-1": "asia-east2",
 }
@@ -82,49 +90,74 @@ _AWS_TO_GCP_MACHINE_TYPE: dict[str, str] = {
     "t3.nano": "e2-micro", "t3.micro": "e2-micro",
     "t3.small": "e2-small", "t3.medium": "e2-medium",
     "t3.large": "e2-standard-2", "t3.xlarge": "e2-standard-4", "t3.2xlarge": "e2-standard-8",
+    "t3a.micro": "e2-micro", "t3a.small": "e2-small",
+    "t3a.medium": "e2-medium", "t3a.large": "e2-standard-2",
     # M-series -> N2
+    "m4.large": "n2-standard-2", "m4.xlarge": "n2-standard-4",
+    "m4.2xlarge": "n2-standard-8", "m4.4xlarge": "n2-standard-16",
     "m5.large": "n2-standard-2", "m5.xlarge": "n2-standard-4",
     "m5.2xlarge": "n2-standard-8", "m5.4xlarge": "n2-standard-16", "m5.8xlarge": "n2-standard-32",
+    "m5.12xlarge": "n2-standard-48", "m5.16xlarge": "n2-standard-64",
+    "m6i.large": "n2-standard-2", "m6i.xlarge": "n2-standard-4",
+    "m6i.2xlarge": "n2-standard-8", "m6i.4xlarge": "n2-standard-16",
     # C-series -> C2
+    "c4.large": "c2-standard-4", "c4.xlarge": "c2-standard-8",
     "c5.large": "c2-standard-4", "c5.xlarge": "c2-standard-8",
     "c5.2xlarge": "c2-standard-16", "c5.4xlarge": "c2-standard-30",
+    "c5.9xlarge": "c2-standard-30", "c5.12xlarge": "c2-standard-60",
+    "c6i.large": "c2-standard-4", "c6i.xlarge": "c2-standard-8",
     # R-series -> N2 highmem
+    "r4.large": "n2-highmem-2", "r4.xlarge": "n2-highmem-4",
     "r5.large": "n2-highmem-2", "r5.xlarge": "n2-highmem-4",
-    "r5.2xlarge": "n2-highmem-8", "r5.4xlarge": "n2-highmem-16",
+    "r5.2xlarge": "n2-highmem-8", "r5.4xlarge": "n2-highmem-16", "r5.8xlarge": "n2-highmem-32",
+    "r6i.large": "n2-highmem-2", "r6i.xlarge": "n2-highmem-4",
+    # Memory-optimized (no direct GCP equivalent -- nearest megamem size)
+    "x1.16xlarge": "m2-megamem-416",
     # GPU (no direct GCP equivalent in this table -- nearest general-purpose size)
-    "p3.2xlarge": "n1-standard-8",
-    "g4dn.xlarge": "n1-standard-4",
+    "p2.xlarge": "n1-standard-4", "p3.2xlarge": "n1-standard-8",
+    "g4dn.xlarge": "n1-standard-4", "g4dn.2xlarge": "n1-standard-8",
+    # Storage/dense (no direct GCP equivalent -- nearest general-purpose size)
+    "i3.large": "n2-standard-2", "i3.xlarge": "n2-standard-4",
+    "d2.xlarge": "n2-standard-4",
 }
 _DEFAULT_GCP_MACHINE_TYPE = "e2-medium"
 
 
 def _detect_gcp_image(attrs: dict[str, Any]) -> str:
-    """Windows vs Linux base image. `platform`/`image_id` come straight from
-    `describe-instances`' `Platform`/`ImageId` fields when available (the
-    reliable signal -- AWS only sets `Platform` at all for Windows); the
-    Name-tag substring checks are the fallback for inputs that don't carry
-    those fields (e.g. a CSV/Excel inventory export).
+    """Base image family + OS version. `platform`/`image_id` come straight
+    from `describe-instances`' `Platform`/`ImageId` fields when available
+    (the reliable signal -- AWS only sets `Platform` at all for Windows);
+    the Name/OS-tag substring checks are the fallback for inputs that don't
+    carry those fields (e.g. a CSV/Excel inventory export).
     """
     platform = str(attrs.get("platform") or "").lower()
     ami_name = str(attrs.get("image_id") or attrs.get("ami_name") or "").lower()
     tags = attrs.get("tags") or {}
+    if isinstance(tags, list):
+        tags = {t.get("Key", ""): t.get("Value", "") for t in tags if isinstance(t, dict)}
     name = str(tags.get("Name") or attrs.get("name") or "").lower()
+    os_tag = str(tags.get("OS") or tags.get("os") or "").lower()
 
-    is_windows = (
-        "windows" in platform
-        or "win" in ami_name
-        or "windows" in ami_name
-        or "win" in name
-        or "windows" in name
+    is_windows = any("windows" in s or "win" in s for s in (platform, ami_name, os_tag) if s) or (
+        "win" in name and "darwin" not in name
     )
-    if not is_windows:
-        return "debian-cloud/debian-11"
 
-    if "2016" in ami_name or "2016" in name:
-        return "windows-cloud/windows-2016-core"
-    if "2019" in ami_name or "2019" in name:
-        return "windows-cloud/windows-2019-core"
-    return "windows-cloud/windows-2022-core"
+    if is_windows:
+        if "2012" in ami_name or "2012" in name:
+            return "windows-cloud/windows-2012-r2-core"
+        if "2016" in ami_name or "2016" in name:
+            return "windows-cloud/windows-2016-core"
+        if "2019" in ami_name or "2019" in name:
+            return "windows-cloud/windows-2019-core"
+        return "windows-cloud/windows-2022-core"
+
+    if "ubuntu" in ami_name or "ubuntu" in name:
+        return "ubuntu-os-cloud/ubuntu-2204-lts"
+    if "rhel" in ami_name or "red hat" in ami_name:
+        return "rhel-cloud/rhel-9"
+    if "centos" in ami_name:
+        return "centos-cloud/centos-stream-9"
+    return "debian-cloud/debian-11"
 
 
 def _infer_disk_size_gb(attrs: dict[str, Any]) -> int:
@@ -132,16 +165,17 @@ def _infer_disk_size_gb(attrs: dict[str, Any]) -> int:
     20 (GCP's practical minimum for a bootable Debian/Windows image) when the
     source has no block-device data at all (e.g. non-AWS-CLI-JSON inputs).
     """
-    bdm = attrs.get("block_device_mappings") or attrs.get("root_block_device") or []
+    bdm = attrs.get("block_device_mappings") or attrs.get("BlockDeviceMappings") or attrs.get("root_block_device") or []
     disk_size = 20
     if isinstance(bdm, list) and bdm:
         first = bdm[0]
         if isinstance(first, dict):
-            ebs = first.get("ebs") or first.get("Ebs") or {}
-            disk_size = int(ebs.get("volume_size") or ebs.get("VolumeSize") or 20)
+            ebs = first.get("ebs") or first.get("Ebs") or first.get("ebs_block_device") or {}
+            if isinstance(ebs, dict):
+                disk_size = int(ebs.get("volume_size") or ebs.get("VolumeSize") or 20)
     elif isinstance(bdm, dict):
         disk_size = int(bdm.get("volume_size") or bdm.get("VolumeSize") or 20)
-    return max(20, disk_size)
+    return max(20, min(disk_size, 65536))
 
 
 _LABEL_KEY_INVALID_RE = re.compile(r"[^a-z0-9_-]")
@@ -693,6 +727,86 @@ resource "google_compute_router_nat" "{tf_name}" {{
 '''
 
 
+def _gen_gcp_gke(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    node_count = int(attrs.get("desired_capacity") or attrs.get("DesiredCapacity") or 2)
+    return f'''resource "google_container_cluster" "{tf_name}" {{
+  name     = var.{tf_name}_name
+  location = var.region
+
+  # Remove default node pool — use the separately managed pool below
+  remove_default_node_pool = true
+  initial_node_count       = 1
+
+  network    = google_compute_network.main.name
+  subnetwork = data.google_compute_subnetwork.default.name
+
+  workload_identity_config {{
+    workload_pool = "${{var.project_id}}.svc.id.goog"
+  }}
+}}
+
+resource "google_container_node_pool" "{tf_name}_nodes" {{
+  name       = "${{var.{tf_name}_name}}-nodes"
+  location   = var.region
+  cluster    = google_container_cluster.{tf_name}.name
+  node_count = {node_count}
+
+  node_config {{
+    machine_type = "e2-standard-2"
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform",
+    ]
+    workload_metadata_config {{
+      mode = "GKE_METADATA"
+    }}
+  }}
+
+  management {{
+    auto_repair  = true
+    auto_upgrade = true
+  }}
+}}
+'''
+
+
+def _gen_gcp_dns_zone(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    domain = str(attrs.get("name") or attrs.get("Name") or resource.name or "example.com")
+    if not domain.endswith("."):
+        domain = domain + "."
+    return f'''resource "google_dns_managed_zone" "{tf_name}" {{
+  name        = var.{tf_name}_name
+  dns_name    = "{domain}"
+  description = "Migrated from {resource.source_type}: {resource.name}"
+  visibility  = "public"
+
+  dnssec_config {{
+    state = "on"
+  }}
+}}
+
+# IMPORTANT: after migration, update the NS records at your registrar to
+# the nameservers shown by: gcloud dns managed-zones describe {tf_name}
+'''
+
+
+def _gen_gcp_cdn(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    return f'''resource "google_compute_backend_bucket" "{tf_name}" {{
+  name        = var.{tf_name}_name
+  bucket_name = google_storage_bucket.origin.name
+  enable_cdn  = true
+
+  cdn_policy {{
+    cache_mode       = "CACHE_ALL_STATIC"
+    default_ttl      = 3600
+    max_ttl          = 86400
+    negative_caching = true
+  }}
+}}
+'''
+
+
 _GCP_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.NETWORK_VPC: _gen_gcp_vpc,
     CanonicalResourceType.NETWORK_SUBNET: _gen_gcp_subnet,
@@ -709,6 +823,9 @@ _GCP_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.MESSAGING_QUEUE: _gen_gcp_sqs,
     CanonicalResourceType.SECRETS_MANAGER: _gen_gcp_secret,
     CanonicalResourceType.NETWORK_NAT_GATEWAY: _gen_gcp_nat,
+    CanonicalResourceType.COMPUTE_CONTAINER_CLUSTER: _gen_gcp_gke,
+    CanonicalResourceType.DNS_ZONE: _gen_gcp_dns_zone,
+    CanonicalResourceType.CDN_DISTRIBUTION: _gen_gcp_cdn,
 }
 
 
@@ -1022,6 +1139,164 @@ def _gen_aws_elasticache(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
+def _gen_aws_lb(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_lb" "{tf_name}" {{
+  name               = var.{tf_name}_name
+  internal           = false
+  load_balancer_type = "application"
+  subnets            = [aws_subnet.app.id]
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-load-balancer:{resource.name}"
+  }}
+}}
+
+resource "aws_lb_target_group" "{tf_name}_tg" {{
+  name     = "${{var.{tf_name}_name}}-tg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main.id
+
+  health_check {{
+    path = "/health"
+  }}
+}}
+'''
+
+
+def _gen_aws_sns_topic(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_sns_topic" "{tf_name}" {{
+  name = var.{tf_name}_name
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-pubsub-topic"
+  }}
+}}
+'''
+
+
+def _gen_aws_sqs_queue(resource: CanonicalResource, tf_name: str) -> str:
+    attrs = resource.native_attributes
+    visibility = int(attrs.get("ack_deadline_seconds") or 30)
+    return f'''resource "aws_sqs_queue" "{tf_name}" {{
+  name                       = var.{tf_name}_name
+  visibility_timeout_seconds = {visibility}
+  message_retention_seconds  = 604800
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-pubsub-subscription"
+  }}
+}}
+'''
+
+
+def _gen_aws_secretsmanager_secret(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_secretsmanager_secret" "{tf_name}" {{
+  name = var.{tf_name}_name
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-secret-manager"
+  }}
+}}
+
+# NOTE: Secret values are NOT migrated automatically -- populate a version
+# out of band (e.g. `aws secretsmanager put-secret-value`), never commit a
+# literal secret value into Terraform state or source.
+'''
+
+
+def _gen_aws_nat_gateway(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_eip" "{tf_name}_eip" {{
+  domain = "vpc"
+
+  tags = {{
+    Name     = "${{var.{tf_name}_name}}-eip"
+    Migrated = "true"
+  }}
+}}
+
+resource "aws_nat_gateway" "{tf_name}" {{
+  allocation_id = aws_eip.{tf_name}_eip.id
+  subnet_id     = aws_subnet.app.id
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-cloud-nat:{resource.name}"
+  }}
+}}
+'''
+
+
+def _gen_aws_route53_zone(resource: CanonicalResource, tf_name: str) -> str:
+    attrs = resource.native_attributes
+    domain = str(attrs.get("dns_name") or attrs.get("name") or resource.name or "example.com")
+    return f'''resource "aws_route53_zone" "{tf_name}" {{
+  name    = "{domain}"
+  comment = "Migrated from {resource.source_type}: {resource.name}"
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+  }}
+}}
+
+# IMPORTANT: after migration, update the NS records at your registrar to
+# the nameservers in aws_route53_zone.{tf_name}.name_servers
+'''
+
+
+def _gen_aws_cloudfront_distribution(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_cloudfront_distribution" "{tf_name}" {{
+  enabled             = true
+  default_root_object = "index.html"
+  comment             = "Migrated from {resource.source_type}: {resource.name}"
+
+  origin {{
+    origin_id   = "{tf_name}-origin"
+    domain_name = aws_s3_bucket.origin.bucket_regional_domain_name
+  }}
+
+  default_cache_behavior {{
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    target_origin_id       = "{tf_name}-origin"
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {{
+      query_string = false
+      cookies {{
+        forward = "none"
+      }}
+    }}
+  }}
+
+  restrictions {{
+    geo_restriction {{
+      restriction_type = "none"
+    }}
+  }}
+
+  viewer_certificate {{
+    cloudfront_default_certificate = true
+  }}
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+  }}
+}}
+'''
+
+
 _AWS_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.NETWORK_VPC: _gen_aws_vpc,
     CanonicalResourceType.NETWORK_SUBNET: _gen_aws_subnet,
@@ -1032,6 +1307,13 @@ _AWS_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.DATABASE_INSTANCE: _gen_aws_db_instance,
     CanonicalResourceType.DATABASE_CACHE: _gen_aws_elasticache,
     CanonicalResourceType.COMPUTE_SERVERLESS_FUNCTION: _gen_aws_lambda_function,
+    CanonicalResourceType.LOAD_BALANCER: _gen_aws_lb,
+    CanonicalResourceType.MESSAGING_TOPIC: _gen_aws_sns_topic,
+    CanonicalResourceType.MESSAGING_QUEUE: _gen_aws_sqs_queue,
+    CanonicalResourceType.SECRETS_MANAGER: _gen_aws_secretsmanager_secret,
+    CanonicalResourceType.NETWORK_NAT_GATEWAY: _gen_aws_nat_gateway,
+    CanonicalResourceType.DNS_ZONE: _gen_aws_route53_zone,
+    CanonicalResourceType.CDN_DISTRIBUTION: _gen_aws_cloudfront_distribution,
 }
 
 
