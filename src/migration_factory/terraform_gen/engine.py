@@ -15,7 +15,9 @@ Design rules:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,161 @@ from migration_factory.domain.enums import CanonicalResourceType, CloudProvider
 from migration_factory.translation.models import SupportStatus, TranslationReport, TranslationResult
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# AWS -> GCP zone/region mapping
+#
+# Not a 1:1 "closest datacenter" table -- a pragmatic default so generated
+# Terraform deploys into a real, existing GCP zone/region instead of a
+# hardcoded "us-central1-a" regardless of where the source AWS estate
+# actually lives. Override in terraform.tfvars for a different placement.
+# ---------------------------------------------------------------------------
+
+_AWS_AZ_TO_GCP_ZONE: dict[str, str] = {
+    # US East
+    "us-east-1a": "us-east4-a", "us-east-1b": "us-east4-b", "us-east-1c": "us-east4-c",
+    "us-east-2a": "us-central1-a", "us-east-2b": "us-central1-b", "us-east-2c": "us-central1-c",
+    # US West
+    "us-west-1a": "us-west2-a", "us-west-1b": "us-west2-b",
+    "us-west-2a": "us-west1-a", "us-west-2b": "us-west1-b", "us-west-2c": "us-west1-c",
+    # Asia Pacific
+    "ap-south-1a": "asia-south1-a", "ap-south-1b": "asia-south1-b", "ap-south-1c": "asia-south1-c",
+    "ap-southeast-1a": "asia-southeast1-a", "ap-southeast-1b": "asia-southeast1-b",
+    "ap-northeast-1a": "asia-northeast1-a", "ap-northeast-1b": "asia-northeast1-b",
+    # Europe
+    "eu-west-1a": "europe-west1-b", "eu-west-1b": "europe-west1-c",
+    "eu-central-1a": "europe-west3-a", "eu-central-1b": "europe-west3-b",
+}
+
+_AWS_REGION_TO_GCP_REGION: dict[str, str] = {
+    "us-east-1": "us-east4", "us-east-2": "us-central1",
+    "us-west-1": "us-west2", "us-west-2": "us-west1",
+    "ap-south-1": "asia-south1", "ap-southeast-1": "asia-southeast1",
+    "ap-northeast-1": "asia-northeast1", "eu-west-1": "europe-west1",
+    "eu-central-1": "europe-west3", "ca-central-1": "northamerica-northeast1",
+    "sa-east-1": "southamerica-east1", "ap-east-1": "asia-east2",
+}
+
+_DEFAULT_GCP_ZONE = "us-central1-a"
+_DEFAULT_GCP_REGION = "us-central1"
+
+# ---------------------------------------------------------------------------
+# AWS instance_type -> GCP machine_type
+# ---------------------------------------------------------------------------
+
+_AWS_TO_GCP_MACHINE_TYPE: dict[str, str] = {
+    # General purpose T-series -> E2
+    "t2.nano": "e2-micro", "t2.micro": "e2-micro",
+    "t2.small": "e2-small", "t2.medium": "e2-medium",
+    "t2.large": "e2-standard-2", "t2.xlarge": "e2-standard-4", "t2.2xlarge": "e2-standard-8",
+    "t3.nano": "e2-micro", "t3.micro": "e2-micro",
+    "t3.small": "e2-small", "t3.medium": "e2-medium",
+    "t3.large": "e2-standard-2", "t3.xlarge": "e2-standard-4", "t3.2xlarge": "e2-standard-8",
+    # M-series -> N2
+    "m5.large": "n2-standard-2", "m5.xlarge": "n2-standard-4",
+    "m5.2xlarge": "n2-standard-8", "m5.4xlarge": "n2-standard-16", "m5.8xlarge": "n2-standard-32",
+    # C-series -> C2
+    "c5.large": "c2-standard-4", "c5.xlarge": "c2-standard-8",
+    "c5.2xlarge": "c2-standard-16", "c5.4xlarge": "c2-standard-30",
+    # R-series -> N2 highmem
+    "r5.large": "n2-highmem-2", "r5.xlarge": "n2-highmem-4",
+    "r5.2xlarge": "n2-highmem-8", "r5.4xlarge": "n2-highmem-16",
+    # GPU (no direct GCP equivalent in this table -- nearest general-purpose size)
+    "p3.2xlarge": "n1-standard-8",
+    "g4dn.xlarge": "n1-standard-4",
+}
+_DEFAULT_GCP_MACHINE_TYPE = "e2-medium"
+
+
+def _detect_gcp_image(attrs: dict[str, Any]) -> str:
+    """Windows vs Linux base image. `platform`/`image_id` come straight from
+    `describe-instances`' `Platform`/`ImageId` fields when available (the
+    reliable signal -- AWS only sets `Platform` at all for Windows); the
+    Name-tag substring checks are the fallback for inputs that don't carry
+    those fields (e.g. a CSV/Excel inventory export).
+    """
+    platform = str(attrs.get("platform") or "").lower()
+    ami_name = str(attrs.get("image_id") or attrs.get("ami_name") or "").lower()
+    tags = attrs.get("tags") or {}
+    name = str(tags.get("Name") or attrs.get("name") or "").lower()
+
+    is_windows = (
+        "windows" in platform
+        or "win" in ami_name
+        or "windows" in ami_name
+        or "win" in name
+        or "windows" in name
+    )
+    if not is_windows:
+        return "debian-cloud/debian-11"
+
+    if "2016" in ami_name or "2016" in name:
+        return "windows-cloud/windows-2016-core"
+    if "2019" in ami_name or "2019" in name:
+        return "windows-cloud/windows-2019-core"
+    return "windows-cloud/windows-2022-core"
+
+
+def _infer_disk_size_gb(attrs: dict[str, Any]) -> int:
+    """Real EBS root volume size instead of a hardcoded 20 -- falls back to
+    20 (GCP's practical minimum for a bootable Debian/Windows image) when the
+    source has no block-device data at all (e.g. non-AWS-CLI-JSON inputs).
+    """
+    bdm = attrs.get("block_device_mappings") or attrs.get("root_block_device") or []
+    disk_size = 20
+    if isinstance(bdm, list) and bdm:
+        first = bdm[0]
+        if isinstance(first, dict):
+            ebs = first.get("ebs") or first.get("Ebs") or {}
+            disk_size = int(ebs.get("volume_size") or ebs.get("VolumeSize") or 20)
+    elif isinstance(bdm, dict):
+        disk_size = int(bdm.get("volume_size") or bdm.get("VolumeSize") or 20)
+    return max(20, disk_size)
+
+
+_LABEL_KEY_INVALID_RE = re.compile(r"[^a-z0-9_-]")
+_LABEL_VALUE_INVALID_RE = re.compile(r"[^a-z0-9_-]")
+
+
+def _sanitize_gcp_labels(tags: dict[str, Any]) -> dict[str, str]:
+    """GCP label keys/values: lowercase letters, digits, `_`/`-` only, <=63
+    chars, key must start with a letter. Real AWS tags routinely violate all
+    three (`aws:eks:cluster-name`, `kubernetes.io/cluster/x`, mixed-case
+    `Name`/`Environment`) and would otherwise fail at `terraform plan`.
+    """
+    sanitized: dict[str, str] = {}
+    for k, v in tags.items():
+        clean_key = _LABEL_KEY_INVALID_RE.sub("_", str(k).lower())
+        clean_key = re.sub(r"^[^a-z]", "x", clean_key) if clean_key else clean_key
+        clean_key = clean_key[:63]
+        clean_val = _LABEL_VALUE_INVALID_RE.sub("_", str(v).lower()[:63])
+        if clean_key and clean_val:
+            sanitized[clean_key] = clean_val
+    return sanitized
+
+
+def _infer_target_region(graph: CanonicalInfrastructureGraph) -> str | None:
+    """Majority AWS source region across the graph, mapped to its GCP
+    equivalent -- so `providers.tf`'s region default reflects where the
+    estate actually lives instead of always defaulting to us-central1.
+    """
+    regions = Counter(r.region for r in graph.resources.values() if r.region)
+    if not regions:
+        return None
+    aws_region, _ = regions.most_common(1)[0]
+    return _AWS_REGION_TO_GCP_REGION.get(aws_region)
+
+
+@dataclass(slots=True)
+class _GcpGenContext:
+    """Graph-wide context every GCP generator function receives, even if
+    most ignore it -- keeps the per-resource generators pure functions of
+    (resource, tf_name, context) instead of reaching for module globals.
+    """
+
+    region: str = _DEFAULT_GCP_REGION
+    subnet_tf_names: dict[str, str] = field(default_factory=dict)
+    used_default_subnet: bool = False
 
 
 class GeneratedFile(BaseModel):
@@ -72,7 +229,7 @@ def _tf_name(resource: CanonicalResource) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _gen_gcp_vpc(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_gcp_vpc(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
     return f'''resource "google_compute_network" "{tf_name}" {{
   name                    = var.{tf_name}_name
   auto_create_subnetworks = false
@@ -81,9 +238,9 @@ def _gen_gcp_vpc(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_gcp_subnet(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_gcp_subnet(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
     cidr = resource.native_attributes.get("cidr_block", "10.0.0.0/24")
-    region = resource.region or "us-central1"
+    region = resource.region or ctx.region
     return f'''resource "google_compute_subnetwork" "{tf_name}" {{
   name          = var.{tf_name}_name
   ip_cidr_range = "{cidr}"
@@ -96,7 +253,7 @@ def _gen_gcp_subnet(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_gcp_firewall(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_gcp_firewall(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
     attrs = resource.native_attributes
 
     # Translate AWS SG ingress rules → GCP allow blocks
@@ -160,11 +317,32 @@ def _gen_gcp_firewall(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_gcp_instance(resource: CanonicalResource, tf_name: str) -> str:
-    zone = resource.native_attributes.get("availability_zone", "us-central1-a")
-    # Map to GCP zone format
-    if zone and not zone.startswith("us-") or "-" not in zone:
-        zone = "us-central1-a"
+def _gen_gcp_instance(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    az = str(attrs.get("availability_zone") or "")
+    zone = _AWS_AZ_TO_GCP_ZONE.get(az, _DEFAULT_GCP_ZONE)
+
+    image = _detect_gcp_image(attrs)
+    disk_size = _infer_disk_size_gb(attrs)
+
+    subnet_id = attrs.get("subnet_id")
+    subnet_tf_name = ctx.subnet_tf_names.get(f"{resource.source_provider.value}:{subnet_id}") if subnet_id else None
+    if subnet_tf_name:
+        subnetwork_ref = f"google_compute_subnetwork.{subnet_tf_name}.id"
+    else:
+        # No matching subnet resource in this graph at all (common for
+        # AWS-CLI-JSON-only input with no Vpcs/Subnets sections) -- a bare
+        # `google_compute_subnetwork.<name>.id` reference here would be
+        # dangling and fail terraform validate, not just terraform plan.
+        subnetwork_ref = "data.google_compute_subnetwork.default.id"
+        ctx.used_default_subnet = True
+
+    clean_labels = _sanitize_gcp_labels(resource.tags or {})
+    labels_hcl = (
+        "\n".join(f'    {k} = "{v}"' for k, v in clean_labels.items())
+        if clean_labels
+        else '    migrated = "true"'
+    )
 
     return f'''resource "google_compute_instance" "{tf_name}" {{
   name         = var.{tf_name}_name
@@ -173,28 +351,28 @@ def _gen_gcp_instance(resource: CanonicalResource, tf_name: str) -> str:
 
   boot_disk {{
     initialize_params {{
-      image = "debian-cloud/debian-11"
-      size  = 20
+      image = "{image}"
+      size  = {disk_size}
     }}
   }}
 
   network_interface {{
-    subnetwork = google_compute_subnetwork.{_sanitize_name(resource.name)}.id
+    subnetwork = {subnetwork_ref}
   }}
 
   metadata = {{
     # Migrated from {resource.source_type}: {resource.name}
-    # Original instance type: {resource.native_attributes.get("instance_type", "unknown")}
+    # Original instance type: {attrs.get("instance_type", "unknown")}
   }}
 
   labels = {{
-    {chr(10).join(f'    {k} = "{v}"' for k, v in resource.tags.items()) if resource.tags else '    migrated = "true"'}
+{labels_hcl}
   }}
 }}
 '''
 
 
-def _gen_gcp_bucket(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_gcp_bucket(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
     location = resource.region or "US"
     return f'''resource "google_storage_bucket" "{tf_name}" {{
   name          = var.{tf_name}_name
@@ -207,6 +385,15 @@ def _gen_gcp_bucket(resource: CanonicalResource, tf_name: str) -> str:
     enabled = true
   }}
 
+  lifecycle_rule {{
+    condition {{
+      num_newer_versions = 5
+    }}
+    action {{
+      type = "Delete"
+    }}
+  }}
+
   labels = {{
     migrated = "true"
     source   = "aws-s3"
@@ -215,8 +402,8 @@ def _gen_gcp_bucket(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_gcp_cloudsql(resource: CanonicalResource, tf_name: str) -> str:
-    region = resource.region or "us-central1"
+def _gen_gcp_cloudsql(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    region = resource.region or ctx.region
     engine = resource.native_attributes.get("engine", "postgres")
     version_map = {"postgres": "POSTGRES_14", "mysql": "MYSQL_8_0", "mariadb": "MYSQL_8_0"}
     db_version = version_map.get(str(engine).lower(), "POSTGRES_14")
@@ -245,7 +432,7 @@ def _gen_gcp_cloudsql(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_gcp_service_account(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_gcp_service_account(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
     attrs = resource.native_attributes
 
     # Map common AWS managed policies to GCP IAM roles
@@ -317,7 +504,7 @@ def _gen_gcp_service_account(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_gcp_lb(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_gcp_lb(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
     return f'''resource "google_compute_health_check" "{tf_name}" {{
   name               = "${{var.{tf_name}_name}}-hc"
   check_interval_sec = 10
@@ -354,6 +541,158 @@ resource "google_compute_global_forwarding_rule" "{tf_name}" {{
 '''
 
 
+_GCP_LAMBDA_RUNTIME_MAP: dict[str, str] = {
+    "python3.9": "python39", "python3.10": "python310", "python3.11": "python311", "python3.12": "python312",
+    "nodejs18.x": "nodejs18", "nodejs20.x": "nodejs20",
+    "java11": "java11", "java17": "java17", "java21": "java21",
+    "go1.x": "go121", "provided.al2": "go121",
+}
+
+
+def _gen_gcp_lambda(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    runtime = _GCP_LAMBDA_RUNTIME_MAP.get(str(attrs.get("runtime", "")).lower(), "python311")
+    memory = attrs.get("memory_size") or 256
+    timeout = attrs.get("timeout") or 60
+    return f'''resource "google_storage_bucket" "{tf_name}_source" {{
+  name                        = "${{var.project_id}}-{tf_name}-source"
+  location                    = var.region
+  uniform_bucket_level_access = true
+}}
+
+resource "google_storage_bucket_object" "{tf_name}_source_zip" {{
+  name   = "{tf_name}-source.zip"
+  bucket = google_storage_bucket.{tf_name}_source.name
+  source = var.{tf_name}_source_zip_path
+}}
+
+resource "google_cloudfunctions2_function" "{tf_name}" {{
+  name     = var.{tf_name}_name
+  location = var.region
+
+  build_config {{
+    runtime     = "{runtime}"
+    entry_point = "{attrs.get("handler", "handler")}"
+    source {{
+      storage_source {{
+        bucket = google_storage_bucket.{tf_name}_source.name
+        object = google_storage_bucket_object.{tf_name}_source_zip.name
+      }}
+    }}
+  }}
+
+  service_config {{
+    available_memory   = "{memory}M"
+    timeout_seconds     = {timeout}
+    max_instance_count = 10
+  }}
+
+  labels = {{
+    migrated = "true"
+    source   = "aws-lambda"
+  }}
+}}
+'''
+
+
+def _gen_gcp_redis(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    return f'''resource "google_redis_instance" "{tf_name}" {{
+  name           = var.{tf_name}_name
+  region         = var.region
+  tier           = "STANDARD_HA"
+  memory_size_gb = 1
+  redis_version  = "REDIS_7_0"
+
+  labels = {{
+    migrated = "true"
+    source   = "aws-elasticache"
+  }}
+}}
+'''
+
+
+def _gen_gcp_iam_policy(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    return f'''resource "google_project_iam_custom_role" "{tf_name}" {{
+  role_id     = "{tf_name}"
+  title       = "Migrated from {resource.source_type}: {resource.name}"
+  description = "Custom role migrated from an AWS IAM policy — review permissions before granting"
+  permissions = ["resourcemanager.projects.get"]
+  stage       = "GA"
+}}
+'''
+
+
+def _gen_gcp_sns(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    return f'''resource "google_pubsub_topic" "{tf_name}" {{
+  name = var.{tf_name}_name
+
+  labels = {{
+    migrated = "true"
+    source   = "aws-sns"
+  }}
+}}
+'''
+
+
+def _gen_gcp_sqs(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    # SQS has no direct standalone GCP equivalent -- Pub/Sub subscriptions
+    # are always attached to a topic, so generate a companion topic too
+    # (import-friendly if a real matching SNS topic already migrated).
+    return f'''resource "google_pubsub_topic" "{tf_name}_topic" {{
+  name = "${{var.{tf_name}_name}}-topic"
+}}
+
+resource "google_pubsub_subscription" "{tf_name}" {{
+  name  = var.{tf_name}_name
+  topic = google_pubsub_topic.{tf_name}_topic.id
+
+  ack_deadline_seconds = 30
+
+  labels = {{
+    migrated = "true"
+    source   = "aws-sqs"
+  }}
+}}
+'''
+
+
+def _gen_gcp_secret(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    return f'''resource "google_secret_manager_secret" "{tf_name}" {{
+  secret_id = var.{tf_name}_name
+
+  replication {{
+    auto {{}}
+  }}
+
+  labels = {{
+    migrated = "true"
+    source   = "aws-secretsmanager"
+  }}
+}}
+
+# The secret VALUE is never migrated automatically -- populate it out of
+# band (e.g. `gcloud secrets versions add`) and reference it, never commit
+# a literal secret value into Terraform state or source.
+'''
+
+
+def _gen_gcp_nat(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    return f'''resource "google_compute_router" "{tf_name}_router" {{
+  name    = "${{var.{tf_name}_name}}-router"
+  region  = var.region
+  network = google_compute_network.main.id
+}}
+
+resource "google_compute_router_nat" "{tf_name}" {{
+  name                               = var.{tf_name}_name
+  router                             = google_compute_router.{tf_name}_router.name
+  region                             = var.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+}}
+'''
+
+
 _GCP_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.NETWORK_VPC: _gen_gcp_vpc,
     CanonicalResourceType.NETWORK_SUBNET: _gen_gcp_subnet,
@@ -363,6 +702,13 @@ _GCP_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.DATABASE_INSTANCE: _gen_gcp_cloudsql,
     CanonicalResourceType.IAM_ROLE: _gen_gcp_service_account,
     CanonicalResourceType.LOAD_BALANCER: _gen_gcp_lb,
+    CanonicalResourceType.COMPUTE_SERVERLESS_FUNCTION: _gen_gcp_lambda,
+    CanonicalResourceType.DATABASE_CACHE: _gen_gcp_redis,
+    CanonicalResourceType.IAM_POLICY: _gen_gcp_iam_policy,
+    CanonicalResourceType.MESSAGING_TOPIC: _gen_gcp_sns,
+    CanonicalResourceType.MESSAGING_QUEUE: _gen_gcp_sqs,
+    CanonicalResourceType.SECRETS_MANAGER: _gen_gcp_secret,
+    CanonicalResourceType.NETWORK_NAT_GATEWAY: _gen_gcp_nat,
 }
 
 
@@ -722,6 +1068,25 @@ class TerraformGenerator:
         except Exception:
             ordered_ids = list(graph.resources.keys())
 
+        gcp_ctx: _GcpGenContext | None = None
+        if self.target_provider is CloudProvider.GCP:
+            inferred_region = _infer_target_region(graph)
+            if inferred_region:
+                self.region = inferred_region
+            # Pre-scan for subnets that will actually get a real resource
+            # block generated -- an instance can only reference
+            # google_compute_subnetwork.<name> if that resource genuinely
+            # exists in this run, otherwise it must fall back to the
+            # default-subnet data source (see _gen_gcp_instance).
+            subnet_tf_names = {
+                r.id: _tf_name(r)
+                for r in graph.resources.values()
+                if r.canonical_type is CanonicalResourceType.NETWORK_SUBNET
+                and (tr := translation_index.get(r.id)) is not None
+                and tr.status is not SupportStatus.UNSUPPORTED
+            }
+            gcp_ctx = _GcpGenContext(region=self.region, subnet_tf_names=subnet_tf_names)
+
         for resource_id in ordered_ids:
             resource = graph.resources[resource_id]
             tr = translation_index.get(resource_id)
@@ -750,7 +1115,7 @@ class TerraformGenerator:
                 continue
 
             name = _tf_name(resource)
-            block = gen_fn(resource, name)
+            block = gen_fn(resource, name, gcp_ctx) if gcp_ctx is not None else gen_fn(resource, name)
             main_blocks.append(block)
 
             # Generate variables for this resource
@@ -763,10 +1128,12 @@ class TerraformGenerator:
 
             if self.target_provider is CloudProvider.GCP:
                 if resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
+                    source_instance_type = str(resource.native_attributes.get("instance_type", "unknown"))
+                    gcp_machine_type = _AWS_TO_GCP_MACHINE_TYPE.get(source_instance_type, _DEFAULT_GCP_MACHINE_TYPE)
                     variable_blocks.append(f'''variable "{name}_machine_type" {{
-  description = "GCP machine type (source instance_type: {resource.native_attributes.get("instance_type", "unknown")})"
+  description = "GCP machine type (source instance_type: {source_instance_type})"
   type        = string
-  default     = "e2-medium"
+  default     = "{gcp_machine_type}"
 }}
 ''')
 
@@ -775,6 +1142,14 @@ class TerraformGenerator:
   description = "GCP service account ID (source: {resource.name})"
   type        = string
   default     = "{_sanitize_name(resource.name)}"
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.COMPUTE_SERVERLESS_FUNCTION:
+                    variable_blocks.append(f'''variable "{name}_source_zip_path" {{
+  description = "Local path to the Cloud Function source zip (source: AWS Lambda {resource.name})"
+  type        = string
+  default     = "{name}-source.zip"
 }}
 ''')
 
@@ -840,6 +1215,16 @@ variable "{name}_password" {{
 ''')
 
             generated_count += 1
+
+        if gcp_ctx is not None and gcp_ctx.used_default_subnet:
+            main_blocks.insert(
+                0,
+                '''data "google_compute_subnetwork" "default" {
+  name   = "default"
+  region = var.region
+}
+''',
+            )
 
         files = [
             GeneratedFile(

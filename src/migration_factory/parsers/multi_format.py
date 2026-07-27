@@ -441,6 +441,13 @@ class AWSCLIOutputParser(BaseParser):
                 "availability_zone": (instance.get("Placement") or {}).get("AvailabilityZone"),
                 "security_groups": [sg.get("GroupId") for sg in instance.get("SecurityGroups", []) if isinstance(sg, dict)],
                 "tags": {t.get("Key"): t.get("Value") for t in tags if isinstance(t, dict)},
+                # "Platform" is only present at all for Windows instances (absent
+                # for Linux) -- the single most reliable OS signal describe-instances
+                # gives you, so the Terraform generator's Windows-image detection
+                # doesn't have to guess from the instance's Name tag alone.
+                "platform": instance.get("Platform"),
+                "image_id": instance.get("ImageId"),
+                "block_device_mappings": instance.get("BlockDeviceMappings", []),
             },
             raw_depends_on=[],
             source_path=source_path,
