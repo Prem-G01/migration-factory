@@ -1,87 +1,88 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import UploadForm from './components/UploadForm'
 import ResultsDashboard from './components/ResultsDashboard'
 import HistoryPage from './components/HistoryPage'
 import { getReport } from './api'
 
-const TRANSITION_MS = 150
-
 export default function App() {
   const [page, setPage] = useState('upload')
-  const [currentResult, setCurrentResult] = useState(null)
-  const [visible, setVisible] = useState(true)
+  const [result, setResult] = useState(null)
 
-  const navigateTo = useCallback((nextPage) => {
-    setVisible(false)
-    setTimeout(() => {
-      setPage(nextPage)
-      setVisible(true)
-    }, TRANSITION_MS)
-  }, [])
-
-  const handleResult = async (result) => {
-    // POST /analyze returns a compact summary only (run_id, direction,
-    // summary) — the dashboard needs the full report (assessment,
-    // security, compliance, plan...), so fetch it once analysis
-    // completes. Same shape handleViewRun already loads from history.
+  // POST /analyze returns a compact summary only (run_id, direction, summary)
+  // — the dashboard needs the full report (assessment, security, compliance,
+  // plan, ai_analysis...), so fetch it once analysis completes.
+  const handleResult = async (r) => {
     try {
-      const report = await getReport(result.run_id)
-      setCurrentResult(report)
-      navigateTo('results')
+      const full = await getReport(r.run_id)
+      setResult(full)
+      setPage('results')
     } catch (e) {
       alert('Failed to load report: ' + e.message)
     }
   }
 
-  const handleViewRun = async (runId) => {
+  const handleViewRun = async (id) => {
     try {
-      const report = await getReport(runId)
-      setCurrentResult(report)
-      navigateTo('results')
+      const full = await getReport(id)
+      setResult(full)
+      setPage('results')
     } catch (e) {
-      alert('Failed to load run: ' + e.message)
+      alert('Failed: ' + e.message)
     }
   }
 
-  // Keyboard shortcuts: 'n' -> new analysis, 'h' -> history, Escape ->
-  // back to upload from results. Ignored while typing in a form field so
-  // e.g. the Discover tab's region input can contain the letter "n".
-  useEffect(() => {
-    const onKeyDown = (e) => {
-      const tag = document.activeElement?.tagName
-      const typing = tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable
-      if (typing) return
-
-      if (e.key === 'n' || e.key === 'N') {
-        navigateTo('upload')
-      } else if (e.key === 'h' || e.key === 'H') {
-        navigateTo('history')
-      } else if (e.key === 'Escape' && page === 'results') {
-        navigateTo('upload')
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [page, navigateTo])
-
   return (
-    <div className={visible ? 'page-transition-in' : 'page-transition-out'}>
-      {page === 'upload' && (
+    <div className="app">
+      <div className="topbar">
+        <div className="logo">
+          <div className="logo-icon">🏭</div>
+          Migration Factory
+          <span style={{ fontSize: 10, fontFamily: 'JetBrains Mono', color: '#2d4a7a', marginLeft: 4 }}>v2.0.3</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {result && <span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 10, fontFamily: 'JetBrains Mono', background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)', color: '#34d399' }}>{result.direction || 'Analysis'}</span>}
+          <span style={{ fontSize: 11, fontFamily: 'JetBrains Mono', color: '#2d4a7a' }}>aws · gcp</span>
+        </div>
+      </div>
+
+      <div className="main-layout">
         <UploadForm onResult={handleResult} />
-      )}
-      {page === 'results' && currentResult && (
-        <ResultsDashboard
-          result={currentResult}
-          onNewAnalysis={() => navigateTo('upload')}
-          onHistory={() => navigateTo('history')}
-        />
-      )}
-      {page === 'history' && (
-        <HistoryPage
-          onViewRun={handleViewRun}
-          onNewAnalysis={() => navigateTo('upload')}
-        />
-      )}
+
+        <div className="right-panel" style={{ height: '100%', overflowY: 'auto' }}>
+          {page === 'upload' && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 16 }}>
+              <div style={{ fontSize: 48, opacity: 0.3 }}>🌌</div>
+              <div style={{ fontFamily: 'JetBrains Mono', fontSize: 13, color: '#2d4a7a', textAlign: 'center', lineHeight: 2 }}>
+                <div>Drop a .tfstate file to analyze</div>
+                <div>or use Discover Live to query AWS directly</div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                {['AWS→GCP', 'GCP→AWS', 'AWS Analysis', 'GCP Analysis'].map((t) => (
+                  <span key={t} style={{ padding: '4px 12px', borderRadius: 20, fontSize: 11, fontFamily: 'JetBrains Mono', background: 'rgba(99,179,237,0.05)', border: '1px solid rgba(99,179,237,0.1)', color: '#4a6fa5' }}>{t}</span>
+                ))}
+              </div>
+              <button onClick={() => setPage('history')} style={{ marginTop: 16, padding: '7px 18px', borderRadius: 9, border: '1px solid rgba(99,179,237,0.15)', background: 'transparent', color: '#4a6fa5', fontSize: 12, cursor: 'pointer', fontFamily: 'JetBrains Mono' }}>
+                📋 View History
+              </button>
+            </div>
+          )}
+
+          {page === 'results' && result && (
+            <ResultsDashboard
+              result={result}
+              onNewAnalysis={() => setPage('upload')}
+              onHistory={() => setPage('history')}
+            />
+          )}
+
+          {page === 'history' && (
+            <HistoryPage
+              onViewRun={handleViewRun}
+              onNewAnalysis={() => setPage('upload')}
+            />
+          )}
+        </div>
+      </div>
     </div>
   )
 }
