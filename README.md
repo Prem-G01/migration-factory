@@ -2,11 +2,11 @@
 
 **AI-Powered Multi-Cloud Infrastructure Migration Platform**
 
-![CI](https://github.com/Prem-G01/migration-factory/actions/workflows/ci.yml/badge.svg?branch=main)
+[![CI](https://github.com/Prem-G01/migration-factory/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Prem-G01/migration-factory/actions)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Tests](https://img.shields.io/badge/tests-381%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-82%25-green)
-![License](https://img.shields.io/badge/license-MIT-blue)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 ![Version](https://img.shields.io/badge/version-2.0.3-blue)
 
 > Analyze and migrate cloud infrastructure between AWS and GCP in seconds.
