@@ -257,6 +257,7 @@ body {
 .compliance-fill {
   height: 100%;
   border-radius: 2px;
+  transition: width 0.6s ease;
 }
 
 /* Waves */
@@ -297,6 +298,29 @@ body {
 @keyframes ai-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
+}
+
+.ai-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  padding: 0;
+  width: 100%;
+  text-align: left;
+  font-family: 'Inter', sans-serif;
+}
+
+.ai-content {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.3s ease;
+}
+
+.ai-content.open {
+  max-height: 500px;
 }
 
 /* Buttons */
