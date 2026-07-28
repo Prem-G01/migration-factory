@@ -2,7 +2,14 @@ import { useState } from 'react'
 import UploadForm from './components/UploadForm'
 import ResultsDashboard from './components/ResultsDashboard'
 import HistoryPage from './components/HistoryPage'
+import DashboardPage from './pages/DashboardPage'
 import { getReport } from './api'
+
+const NAV_ITEMS = [
+  { id: 'upload', label: 'Analyze' },
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'history', label: 'History' },
+]
 
 export default function App() {
   const [page, setPage] = useState('upload')
@@ -39,7 +46,18 @@ export default function App() {
           Migration Factory
           <span style={{ fontSize: 10, fontFamily: 'JetBrains Mono', color: '#2d4a7a', marginLeft: 4 }}>v2.0.3</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <nav style={{ display: 'flex', gap: 4, marginLeft: 24 }}>
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.id}
+              className={`tab-btn ${page === item.id || (item.id === 'upload' && page === 'results') ? 'active' : ''}`}
+              onClick={() => setPage(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
           {result && <span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 10, fontFamily: 'JetBrains Mono', background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)', color: '#34d399' }}>{result.direction || 'Analysis'}</span>}
           <span style={{ fontSize: 11, fontFamily: 'JetBrains Mono', color: '#2d4a7a' }}>aws · gcp</span>
         </div>
@@ -65,6 +83,10 @@ export default function App() {
                 📋 View History
               </button>
             </div>
+          )}
+
+          {page === 'dashboard' && (
+            <DashboardPage onNew={() => setPage('upload')} onView={handleViewRun} />
           )}
 
           {page === 'results' && result && (
