@@ -425,5 +425,5 @@ def health() -> dict[str, Any]:
         "supported_sources": ["aws", "gcp"],
         "supported_targets": ["gcp", "aws"],
         "parsers": 10,
-        "tests_passing": 346,
+        "tests_passing": 381,
     }

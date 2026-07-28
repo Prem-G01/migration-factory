@@ -193,13 +193,9 @@ class DeploymentPackageGenerator:
 
         # Copy Terraform files
         for tf_file in source_dir.glob("*.tf"):
-            (package_dir / tf_file.name).write_text(
-                tf_file.read_text(encoding="utf-8"), encoding="utf-8"
-            )
+            (package_dir / tf_file.name).write_text(tf_file.read_text(encoding="utf-8"), encoding="utf-8")
         for tfvars in source_dir.glob("*.tfvars"):
-            (package_dir / tfvars.name).write_text(
-                tfvars.read_text(encoding="utf-8"), encoding="utf-8"
-            )
+            (package_dir / tfvars.name).write_text(tfvars.read_text(encoding="utf-8"), encoding="utf-8")
 
         # Generate deploy script
         deploy_script = f"""#!/bin/bash

@@ -1641,8 +1641,18 @@ variable "region" {{
 '''
 
     def _generate_backend(self) -> str:
+        # NOTE: Terraform backend blocks cannot reference variables, locals,
+        # or any other computed value — the bucket name below must be a
+        # literal string. (`bucket = var.tfstate_bucket` fails `terraform
+        # init` with "Error: Variables not allowed".) The placeholder is
+        # called out explicitly instead so the failure mode is a clear
+        # bucket-doesn't-exist error rather than a silent default.
         if self.target_provider is CloudProvider.AWS:
-            return '''terraform {
+            return '''# TODO: Set this to your own S3 bucket for Terraform state before running
+# `terraform init` (backend blocks cannot use variables — this must be a
+# literal string, or overridden with `terraform init -backend-config="bucket=YOUR_BUCKET"`).
+# Create the bucket first: aws s3 mb s3://YOUR_PROJECT-tfstate
+terraform {
   backend "s3" {
     bucket = "migration-factory-tfstate"
     key    = "migration/terraform.tfstate"
@@ -1650,7 +1660,11 @@ variable "region" {{
   }
 }
 '''
-        return f'''terraform {{
+        return f'''# TODO: Set this to your own GCS bucket for Terraform state before running
+# `terraform init` (backend blocks cannot use variables — this must be a
+# literal string, or overridden with `terraform init -backend-config="bucket=YOUR_BUCKET"`).
+# Create the bucket first: gsutil mb gs://YOUR_PROJECT-tfstate
+terraform {{
   backend "gcs" {{
     bucket = "{self.project_id}-tfstate"
     prefix = "migration"

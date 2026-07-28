@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "migration-factory"
-version = "0.1.0"
+version = "2.0.3"
 description = "AI-Powered Multi-Cloud Infrastructure Migration Factory — Foundation & Ingestion Layer"
 readme = "README.md"
 requires-python = ">=3.11"

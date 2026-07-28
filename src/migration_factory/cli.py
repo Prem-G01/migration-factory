@@ -613,15 +613,10 @@ def _poc_pipeline(
                 results["report"] = report
                 if output_dir:
                     output_dir.mkdir(parents=True, exist_ok=True)
-                    (output_dir / "migration-report.md").write_text(
-                        report.to_markdown(), encoding="utf-8"
-                    )
-                    (output_dir / "migration-report.html").write_text(
-                        ReportingEngine().to_html(report), encoding="utf-8"
-                    )
-                    (output_dir / "dependency-graph.mmd").write_text(
-                        generate_mermaid_diagram(results["ingestion"].graph), encoding="utf-8"
-                    )
+                    (output_dir / "migration-report.md").write_text(report.to_markdown(), encoding="utf-8")
+                    (output_dir / "migration-report.html").write_text(ReportingEngine().to_html(report), encoding="utf-8")
+                    mermaid_diagram = generate_mermaid_diagram(results["ingestion"].graph)
+                    (output_dir / "dependency-graph.mmd").write_text(mermaid_diagram, encoding="utf-8")
 
             # ── 13. AI Analysis ────────────────────────────────────────────
             elif key == "AI Analysis":
