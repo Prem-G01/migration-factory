@@ -10,9 +10,27 @@ const riskColor = (r) => ({ low: '#34d399', medium: '#fbbf24', high: '#f87171', 
 
 const frameworkColor = (s) => (s >= 80 ? '#34d399' : s >= 60 ? '#fbbf24' : '#f87171')
 
+// downloadTerraform requests responseType: 'blob', and browsers apply that
+// responseType uniformly regardless of status code — so an error response's
+// body arrives as a Blob too, not parsed JSON. e.response.data.detail would
+// silently be undefined in that case; read the blob as text first.
+const extractErrorDetail = async (e) => {
+  const data = e.response?.data
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text())
+      return parsed.detail || e.message || 'Download failed'
+    } catch {
+      return e.message || 'Download failed'
+    }
+  }
+  return data?.detail || e.message || 'Download failed'
+}
+
 export default function ResultsDashboard({ result, onNewAnalysis, onHistory }) {
   const [activeTab, setActiveTab] = useState('waves')
   const [downloading, setDownloading] = useState(false)
+  const [dlError, setDlError] = useState('')
 
   // `result` here IS the full report object returned by GET /api/v1/report/{id}
   // (assessment/security/compliance/plan/ai_analysis all live at the top level,
@@ -33,11 +51,25 @@ export default function ResultsDashboard({ result, onNewAnalysis, onHistory }) {
     ...(security?.secret_findings || []).map((f) => ({ ...f, cat: 'Secrets' })),
   ]
 
+  // Authoritative: the backend already knows whether Terraform was generated
+  // for this run (analyze_only mode skips generation entirely) and reports
+  // it directly, so there's no need to guess from the `direction` string.
+  const isAnalyzeOnly = result?.terraform_available === false
+
   const handleDownload = async () => {
+    setDlError('')
+    if (isAnalyzeOnly) {
+      setDlError('Select "Migrate to GCP" or "Migrate to AWS" as target to generate Terraform')
+      return
+    }
     setDownloading(true)
-    try { await downloadTerraform(result.run_id) }
-    catch { alert('Not available for analyze-only') }
-    finally { setDownloading(false) }
+    try {
+      await downloadTerraform(result.run_id)
+    } catch (e) {
+      setDlError(await extractErrorDetail(e))
+    } finally {
+      setDownloading(false)
+    }
   }
 
   const handleReport = async () => {
@@ -225,12 +257,23 @@ export default function ResultsDashboard({ result, onNewAnalysis, onHistory }) {
       )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <button className="act-btn dl" onClick={handleDownload} disabled={downloading}>
+        <button
+          className="act-btn dl"
+          onClick={handleDownload}
+          disabled={downloading || isAnalyzeOnly}
+          title={isAnalyzeOnly ? 'No Terraform was generated for this run — analyze-only mode has no infrastructure target' : undefined}
+          style={isAnalyzeOnly ? { borderColor: 'rgba(99,179,237,0.1)', color: '#2d4a7a', cursor: 'not-allowed' } : undefined}
+        >
           {downloading ? '···' : '⬇ Terraform'}
         </button>
         <button className="act-btn rp" onClick={handleReport}>📄 Report</button>
         <button className="act-btn cp" onClick={() => navigator.clipboard.writeText(result?.run_id || '')}>⎘ ID</button>
       </div>
+      {dlError && (
+        <div style={{ marginTop: 8, padding: '8px 12px', background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 8, fontSize: 12, color: '#f87171' }}>
+          {dlError}
+        </div>
+      )}
     </div>
   )
 }

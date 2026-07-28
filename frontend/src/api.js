@@ -27,7 +27,9 @@ export const downloadTerraform = async (runId) => {
   const a = document.createElement('a')
   a.href = url
   a.download = `migration-terraform-${runId.slice(0,8)}.zip`
+  document.body.appendChild(a)
   a.click()
+  document.body.removeChild(a)
   URL.revokeObjectURL(url)
 }
 
