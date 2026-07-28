@@ -132,16 +132,17 @@ def _run_pipeline(source_path: Path, source_filename: str, target: _Target | Non
         terraform_report = generator.generate(ingestion.graph, translation)
         terraform_zip_bytes = _build_terraform_zip(terraform_report.files)
 
-    migration_report = ReportingEngine().generate(
+    direction = _direction_label(source_provider, target_provider)
+
+    html_report = ReportingEngine().to_html_dashboard(
         assessment=assessment,
-        translation=translation,
         security=security,
         compliance=compliance,
         finops=finops,
-        validation=validation,
-        terraform=terraform_report,
+        plan=plan,
+        translation=translation,
+        direction=direction,
     )
-    html_report = ReportingEngine().to_html(migration_report)
 
     ai_engine = AIEngine()
     ai_risks = ai_engine.analyze_migration_risks(ingestion.graph, translation, assessment)
@@ -156,7 +157,6 @@ def _run_pipeline(source_path: Path, source_filename: str, target: _Target | Non
         "mode": "ai" if ai_engine.is_available else "rule_based",
     }
 
-    direction = _direction_label(source_provider, target_provider)
     run_id = str(uuid.uuid4())
     duration_seconds = round(time.perf_counter() - started_at, 2)
     created_at = datetime.now(UTC)

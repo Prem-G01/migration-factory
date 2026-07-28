@@ -7,6 +7,7 @@ structured reports in Markdown, JSON, and HTML.
 
 from __future__ import annotations
 
+import html as _html
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -17,6 +18,7 @@ from migration_factory.compliance.engine import ComplianceReport
 from migration_factory.core.logging import get_logger
 from migration_factory.domain.canonical_model import CanonicalInfrastructureGraph
 from migration_factory.finops.engine import FinOpsReport
+from migration_factory.planner.engine import EnhancedMigrationPlan
 from migration_factory.security.engine import SecurityReport
 from migration_factory.terraform_gen.engine import TerraformGenerationReport
 from migration_factory.translation.models import TranslationReport
@@ -363,3 +365,240 @@ section{{margin:2rem 0}}
 <p><em>Generated: {report.generated_at}</em></p>
 {sections_html}
 </body></html>"""
+
+    def to_html_dashboard(
+        self,
+        *,
+        assessment: MigrationAssessment | None = None,
+        security: SecurityReport | None = None,
+        compliance: ComplianceReport | None = None,
+        finops: FinOpsReport | None = None,
+        plan: EnhancedMigrationPlan | None = None,
+        translation: TranslationReport | None = None,
+        direction: str = "",
+        version: str = "2.0.3",
+    ) -> str:
+        """Render the galaxy-themed dashboard report served at
+        GET /api/v1/report/{run_id}/html and written to migration-report.html.
+
+        Takes the raw per-engine outputs directly (the same objects already
+        in scope at both call sites) rather than a MigrationReport, since a
+        MigrationReport only carries pre-flattened markdown section text —
+        it has no structured access to scores, waves, or resource rows.
+        """
+        esc = _html.escape
+
+        complexity = assessment.overall_complexity_score if assessment else 0
+        risk_val = assessment.risk_level.value if assessment else "unknown"
+        blockers = assessment.blockers if assessment else []
+        recommendation = assessment.recommendation if assessment else ""
+        resources = assessment.resource_assessments if assessment else []
+
+        sec_score = security.security_score if security else 0
+
+        confidence = plan.confidence.overall_confidence if plan else 0
+        downtime_minutes = plan.cutover_plan.total_downtime_minutes if plan else 0
+        waves = plan.waves if plan else []
+
+        s = finops.cost_summary if finops else None
+        monthly_savings = s.monthly_savings if s else 0
+
+        frameworks = compliance.framework_results if compliance else []
+
+        # ResourceAssessment carries no target_service of its own — that
+        # lives on the matching TranslationResult (same merge api/main.py
+        # does for the JSON report, kept consistent here).
+        target_by_resource: dict[str, str] = {}
+        if translation:
+            target_by_resource = {tr.resource_id: tr.target_service or "" for tr in translation.results}
+
+        def score_color(value: int, invert: bool = False) -> str:
+            if invert:
+                return "#34d399" if value <= 30 else "#fbbf24" if value <= 60 else "#f87171"
+            return "#34d399" if value >= 70 else "#fbbf24" if value >= 40 else "#f87171"
+
+        risk_colors = {"low": "#34d399", "medium": "#fbbf24", "high": "#f87171", "critical": "#ef4444"}
+        risk_color = risk_colors.get(risk_val.lower(), "#94a3b8")
+
+        frameworks_html = ""
+        for f in frameworks:
+            pct = round(f.compliance_score)
+            color = "#34d399" if pct >= 80 else "#fbbf24" if pct >= 60 else "#f87171"
+            failed = ", ".join(esc(c) for c in f.failed_check_ids[:3])
+            frameworks_html += f"""
+        <div style="margin-bottom:16px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+            <span class="mono" style="font-size:13px;color:#94a3b8">{esc(f.framework)}</span>
+            <span class="mono" style="font-size:13px;color:{color};font-weight:600">{pct}%</span>
+          </div>
+          <div style="height:4px;background:rgba(99,179,237,0.1);border-radius:2px">
+            <div style="height:100%;width:{pct}%;background:{color};border-radius:2px"></div>
+          </div>
+          <div class="mono" style="font-size:11px;color:#4a6fa5;margin-top:4px">{('Failed: ' + failed) if failed else '✓ All checks passed'}</div>
+        </div>"""
+        if not frameworks_html:
+            frameworks_html = '<div style="color:#4a6fa5;font-size:13px;padding:12px">No compliance data available.</div>'
+
+        waves_html = ""
+        for w in waves:
+            dur = f"{int(w.estimated_duration_hours * 60)}m" if w.estimated_duration_hours < 1 else f"{w.estimated_duration_hours:.1f}h"
+            badge_color = "#34d399" if w.can_parallelize else "#fbbf24"
+            badge_text = "⚡ Parallel" if w.can_parallelize else "→ Sequential"
+            waves_html += f"""
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:rgba(10,20,50,0.5);border:1px solid rgba(99,179,237,0.08);border-radius:8px;margin-bottom:6px">
+          <div style="width:24px;height:24px;border-radius:50%;background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.25);display:flex;align-items:center;justify-content:center;font-size:11px;color:#60a5fa;flex-shrink:0" class="mono">{w.wave_number}</div>
+          <div style="flex:1;font-size:13px;color:#94a3b8">{esc(w.name)} <span style="color:#4a6fa5;font-size:11px">({len(w.resource_ids)} resources)</span></div>
+          <span class="mono" style="padding:2px 8px;border-radius:20px;font-size:11px;color:{badge_color};background:{badge_color}1a;border:1px solid {badge_color}33">{badge_text}</span>
+          <span class="mono" style="font-size:11px;color:#4a6fa5">{dur}</span>
+        </div>"""
+        if not waves_html:
+            waves_html = '<div style="color:#4a6fa5;font-size:13px;padding:12px">No migration waves (analyze-only mode).</div>'
+
+        strat_colors = {"rehost": "#34d399", "replatform": "#fbbf24", "manual": "#fb923c"}
+        resources_html = ""
+        for r in resources[:20]:
+            rtype_val = r.canonical_type.value
+            score = r.complexity_score
+            strat_val = r.strategy.value
+            target = target_by_resource.get(r.resource_id) or "—"
+            sc = score_color(score, invert=True)
+            strat_color = strat_colors.get(strat_val, "#94a3b8")
+            resources_html += f"""
+        <tr>
+          <td class="mono" style="padding:8px 12px;border-bottom:1px solid rgba(99,179,237,0.06);font-size:12px;color:#94a3b8">{esc(r.resource_name[:28])}</td>
+          <td class="mono" style="padding:8px 12px;border-bottom:1px solid rgba(99,179,237,0.06);font-size:11px;color:#4a6fa5">{esc(rtype_val.split('.')[-1] if '.' in rtype_val else rtype_val)}</td>
+          <td class="mono" style="padding:8px 12px;border-bottom:1px solid rgba(99,179,237,0.06);color:{sc};font-weight:600">{score}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid rgba(99,179,237,0.06)"><span class="mono" style="padding:2px 8px;border-radius:20px;font-size:11px;color:{strat_color};background:{strat_color}1a">{esc(strat_val)}</span></td>
+          <td style="padding:8px 12px;border-bottom:1px solid rgba(99,179,237,0.06);font-size:11px;color:#4a6fa5">{esc(target[:24])}</td>
+        </tr>"""
+        if not resources_html:
+            resources_html = '<tr><td colspan="5" style="padding:12px;color:#4a6fa5">No resources assessed.</td></tr>'
+
+        blockers_html = "".join(
+            f'<div style="padding:10px 14px;background:rgba(251,191,36,0.05);border:1px solid '
+            f'rgba(251,191,36,0.15);border-left:3px solid #fbbf24;border-radius:6px;margin-bottom:6px;'
+            f'font-size:13px;color:#94a3b8">⚠ {esc(b)}</div>'
+            for b in blockers
+        )
+        if not blockers_html:
+            blockers_html = '<div style="color:#34d399;font-size:13px;padding:12px">✓ No blockers — ready to migrate</div>'
+
+        rec_html = (
+            f'<div class="rec">{esc(recommendation)}</div>'
+            if recommendation
+            else '<div class="rec" style="color:#4a6fa5">No recommendation available.</div>'
+        )
+
+        generated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Migration Factory Report</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:#020818;color:#e2e8f0;font-family:Inter,system-ui,sans-serif;font-size:14px;line-height:1.6;padding:32px;min-height:100vh}}
+.mono{{font-family:'JetBrains Mono',monospace}}
+.header{{display:flex;align-items:center;gap:16px;margin-bottom:32px;padding-bottom:20px;border-bottom:1px solid rgba(99,179,237,0.12)}}
+.logo{{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#06b6d4);display:flex;align-items:center;justify-content:center;font-size:20px}}
+.title{{font-size:22px;font-weight:600;letter-spacing:-0.3px}}
+.subtitle{{font-size:13px;color:#4a6fa5;margin-top:2px}}
+.badge{{padding:3px 10px;border-radius:20px;font-size:11px}}
+.metrics{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:28px}}
+.metric{{background:rgba(10,20,50,0.6);border:1px solid rgba(99,179,237,0.1);border-radius:12px;padding:16px;position:relative;overflow:hidden}}
+.metric::before{{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--accent)}}
+.metric-label{{font-size:10px;color:#2d4a7a;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px}}
+.metric-value{{font-size:26px;font-weight:600;line-height:1;color:var(--accent)}}
+.metric-sub{{font-size:11px;color:#4a6fa5;margin-top:4px}}
+.section{{margin-bottom:28px}}
+.section-title{{font-size:11px;color:#2d4a7a;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:14px;padding-bottom:6px;border-bottom:1px solid rgba(99,179,237,0.08)}}
+table{{width:100%;border-collapse:collapse}}
+th{{font-size:10px;color:#2d4a7a;text-align:left;padding:8px 12px;border-bottom:1px solid rgba(99,179,237,0.1);text-transform:uppercase;letter-spacing:0.05em}}
+.rec{{background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.15);border-radius:10px;padding:16px;font-size:13px;color:#94a3b8;line-height:1.7}}
+.footer{{margin-top:40px;padding-top:16px;border-top:1px solid rgba(99,179,237,0.08);font-size:11px;color:#2d4a7a;display:flex;justify-content:space-between}}
+@media (max-width:640px){{.metrics{{grid-template-columns:repeat(2,1fr)}}}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo">\U0001f3ed</div>
+  <div>
+    <div class="title">Migration Factory</div>
+    <div class="subtitle mono">{esc(direction) or 'AI-Powered Multi-Cloud Infrastructure Migration Report'}</div>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+    <span class="badge mono" style="background:rgba(52,211,153,0.1);border:1px solid rgba(52,211,153,0.25);color:#34d399">v{esc(version)}</span>
+    <span class="badge mono" style="background:{risk_color}1a;border:1px solid {risk_color}40;color:{risk_color}">{esc(risk_val.upper())}</span>
+  </div>
+</div>
+
+<div class="metrics">
+  <div class="metric" style="--accent:{score_color(complexity, invert=True)}">
+    <div class="metric-label">Complexity</div>
+    <div class="metric-value mono">{complexity}</div>
+    <div class="metric-sub">/ 100</div>
+  </div>
+  <div class="metric" style="--accent:{risk_color}">
+    <div class="metric-label">Risk Level</div>
+    <div class="metric-value mono" style="font-size:20px">{esc(risk_val.upper())}</div>
+    <div class="metric-sub">assessment</div>
+  </div>
+  <div class="metric" style="--accent:{score_color(confidence)}">
+    <div class="metric-label">Confidence</div>
+    <div class="metric-value mono">{confidence}</div>
+    <div class="metric-sub">/ 100</div>
+  </div>
+  <div class="metric" style="--accent:{score_color(sec_score)}">
+    <div class="metric-label">Security Score</div>
+    <div class="metric-value mono">{sec_score}</div>
+    <div class="metric-sub">/ 100</div>
+  </div>
+  <div class="metric" style="--accent:#34d399">
+    <div class="metric-label">Monthly Savings</div>
+    <div class="metric-value mono">${monthly_savings:,.0f}</div>
+    <div class="metric-sub">/ month</div>
+  </div>
+  <div class="metric" style="--accent:{'#34d399' if downtime_minutes < 10 else '#fbbf24' if downtime_minutes < 60 else '#f87171'}">
+    <div class="metric-label">Downtime</div>
+    <div class="metric-value mono">{downtime_minutes}</div>
+    <div class="metric-sub">minutes</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Recommendation</div>
+  {rec_html}
+</div>
+
+<div class="section">
+  <div class="section-title">Migration Waves ({len(waves)})</div>
+  {waves_html}
+</div>
+
+<div class="section">
+  <div class="section-title">Resource Assessment ({len(resources)})</div>
+  <table>
+    <thead><tr><th>Resource</th><th>Type</th><th>Score</th><th>Strategy</th><th>Target</th></tr></thead>
+    <tbody>{resources_html}</tbody>
+  </table>
+</div>
+
+<div class="section">
+  <div class="section-title">Compliance</div>
+  {frameworks_html}
+</div>
+
+<div class="section">
+  <div class="section-title">Blockers ({len(blockers)})</div>
+  {blockers_html}
+</div>
+
+<div class="footer mono">
+  <span>Migration Factory v{esc(version)}</span>
+  <span>Generated {generated_at}</span>
+</div>
+</body>
+</html>"""

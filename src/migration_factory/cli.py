@@ -614,7 +614,21 @@ def _poc_pipeline(
                 if output_dir:
                     output_dir.mkdir(parents=True, exist_ok=True)
                     (output_dir / "migration-report.md").write_text(report.to_markdown(), encoding="utf-8")
-                    (output_dir / "migration-report.html").write_text(ReportingEngine().to_html(report), encoding="utf-8")
+                    report_direction = (
+                        f"{source_provider.value.upper()} Analysis"
+                        if mode != "migrate"
+                        else f"{source_provider.value.upper()} → {target_provider.value.upper()}"
+                    )
+                    dashboard_html = ReportingEngine().to_html_dashboard(
+                        assessment=results.get("assessment"),
+                        security=results.get("security"),
+                        compliance=results.get("compliance"),
+                        finops=results.get("finops"),
+                        plan=results.get("plan"),
+                        translation=results.get("translation"),
+                        direction=report_direction,
+                    )
+                    (output_dir / "migration-report.html").write_text(dashboard_html, encoding="utf-8")
                     mermaid_diagram = generate_mermaid_diagram(results["ingestion"].graph)
                     (output_dir / "dependency-graph.mmd").write_text(mermaid_diagram, encoding="utf-8")
 

@@ -124,6 +124,9 @@ plugins = ["pydantic.mypy"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
 "src/migration_factory/ai/engine.py" = ["E501"]
+# HTML/CSS template strings for the dashboard report — wrapping them hurts
+# readability more than the line-length rule helps here.
+"src/migration_factory/reporting/engine.py" = ["E501"]
 # FastAPI's dependency-injection idiom requires `= File(...)` / `= Form(...)`
 # as literal argument defaults; B008 doesn't know this pattern from a real
 # mutable-default bug.
