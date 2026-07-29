@@ -50,7 +50,7 @@ export default function DashboardPage({ onNew, onView }) {
         <div>
           <div style={{ fontSize:18, fontWeight:600 }}>Dashboard</div>
           <div style={{ fontSize:11, fontFamily:'JetBrains Mono', color:'#2d4a7a', marginTop:2 }}>
-            {total} analyses · session overview
+            {total} total analyses
           </div>
         </div>
         <button onClick={onNew} style={{ padding:'7px 18px', borderRadius:9, border:'1px solid rgba(99,179,237,0.25)', background:'rgba(99,179,237,0.07)', color:'#60a5fa', fontSize:12, cursor:'pointer', fontFamily:'Inter' }}>

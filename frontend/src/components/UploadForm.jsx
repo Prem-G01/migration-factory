@@ -34,10 +34,13 @@ const ALL_STAGES = ['Parsing infrastructure', 'Translating resources', 'Assessin
 // stage list shouldn't promise a step that won't actually happen.
 const getStages = (target) => (target === 'analyze_only' ? ALL_STAGES.slice(0, 3) : ALL_STAGES)
 
+// import.meta.env.BASE_URL (not a hardcoded "/") so these still resolve
+// correctly once deployed under a subpath, e.g. GitHub Pages'
+// /migration-factory/ base — a bare "/samples/..." would 404 there.
 const SAMPLES = [
-  { label: 'Try AWS sample', url: '/samples/aws-sample.tfstate', filename: 'aws-sample.tfstate', target: 'gcp' },
-  { label: 'Try GCP sample', url: '/samples/gcp-sample.tfstate', filename: 'gcp-sample.tfstate', target: 'aws' },
-  { label: 'Try complex estate', url: '/samples/complex-estate.tfstate', filename: 'complex-estate.tfstate', target: 'gcp' },
+  { label: 'Try AWS sample', url: `${import.meta.env.BASE_URL}samples/aws-sample.tfstate`, filename: 'aws-sample.tfstate', target: 'gcp' },
+  { label: 'Try GCP sample', url: `${import.meta.env.BASE_URL}samples/gcp-sample.tfstate`, filename: 'gcp-sample.tfstate', target: 'aws' },
+  { label: 'Try complex estate', url: `${import.meta.env.BASE_URL}samples/complex-estate.tfstate`, filename: 'complex-estate.tfstate', target: 'gcp' },
 ]
 
 export default function UploadForm({ onResult }) {
@@ -279,7 +282,7 @@ export default function UploadForm({ onResult }) {
 
       <div style={{ marginTop: 'auto', paddingTop: 16 }}>
         <div className="section-label">Quick Start</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
           {SAMPLES.map((sample) => (
             <button
               key={sample.url}
@@ -290,14 +293,6 @@ export default function UploadForm({ onResult }) {
               {loadingSample === sample.url ? '⏳ loading···' : sample.label}
             </button>
           ))}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-          <div style={{ fontSize: 11, fontFamily: 'JetBrains Mono', color: '#2d4a7a', padding: '6px 10px', borderRadius: 6, background: 'rgba(10,20,50,0.4)', border: '1px solid rgba(99,179,237,0.06)' }}>
-            migration-factory poc infra.tfstate --target gcp
-          </div>
-          <div style={{ fontSize: 11, fontFamily: 'JetBrains Mono', color: '#2d4a7a', padding: '6px 10px', borderRadius: 6, background: 'rgba(10,20,50,0.4)', border: '1px solid rgba(99,179,237,0.06)' }}>
-            GET /api/v1/discover/aws?region=ap-south-1
-          </div>
         </div>
       </div>
     </div>

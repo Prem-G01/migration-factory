@@ -559,7 +559,11 @@ th{{font-size:10px;color:#2d4a7a;text-align:left;padding:8px 12px;border-bottom:
   <div class="metric" style="--accent:#34d399">
     <div class="metric-label">Monthly Savings</div>
     <div class="metric-value mono">${monthly_savings:,.0f}</div>
-    <div class="metric-sub">/ month</div>
+    <div class="metric-sub">/ month (estimated)</div>
+    <div style="font-size:10px;color:#4a6fa5;margin-top:4px">
+      * Estimated using on-demand pricing. Actual costs vary with reserved
+      instances, committed use discounts, and data transfer.
+    </div>
   </div>
   <div class="metric" style="--accent:{'#34d399' if downtime_minutes < 10 else '#fbbf24' if downtime_minutes < 60 else '#f87171'}">
     <div class="metric-label">Downtime</div>

@@ -194,7 +194,6 @@ export default function ResultsDashboard({ result, onNewAnalysis, onHistory }) {
           <span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 11, fontFamily: 'JetBrains Mono', background: dirColor.bg, border: `1px solid ${dirColor.border}`, color: dirColor.color }}>
             {result?.direction || 'Analysis'}
           </span>
-          <span style={{ fontSize: 10, fontFamily: 'JetBrains Mono', color: '#2d4a7a' }}>{result?.run_id?.slice(0, 8)}</span>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           <button onClick={onHistory} style={{ padding: '5px 12px', borderRadius: 7, border: '1px solid rgba(99,179,237,0.1)', background: 'transparent', color: '#4a6fa5', fontSize: 11, cursor: 'pointer' }}>History</button>
@@ -208,7 +207,7 @@ export default function ResultsDashboard({ result, onNewAnalysis, onHistory }) {
           { label: 'Risk', raw: null, display: (s.risk_level || '—').toUpperCase(), sub: 'level', cls: 'yellow', color: riskColor(s.risk_level) },
           { label: 'Confidence', raw: s.confidence_score, sub: '/100', cls: 'blue', color: scoreColor(s.confidence_score), countUp: true },
           { label: 'Security', raw: s.security_score, sub: '/100', cls: 'cyan', color: scoreColor(s.security_score), countUp: true },
-          { label: 'Savings', raw: s.monthly_savings, prefix: '$', sub: '/month', cls: 'green', color: '#34d399', countUp: true },
+          { label: 'Savings', raw: s.monthly_savings, prefix: '$', sub: '/month (estimated)', cls: 'green', color: '#34d399', countUp: true },
           { label: 'Downtime', raw: null, display: `${s.downtime_minutes ?? '—'}`, sub: 'minutes', cls: 'yellow', color: s.downtime_minutes < 10 ? '#34d399' : s.downtime_minutes < 60 ? '#fbbf24' : '#f87171' },
         ].map((m, i) => (
           <div key={i} className={`metric-card ${m.cls}`}>
@@ -292,6 +291,10 @@ export default function ResultsDashboard({ result, onNewAnalysis, onHistory }) {
 
         {activeTab === 'compliance' && (
           <div>
+            <div style={{ fontSize: 11, fontFamily: 'JetBrains Mono', color: '#4a6fa5', padding: '8px 12px', background: 'rgba(99,179,237,0.04)', border: '1px solid rgba(99,179,237,0.08)', borderRadius: 6, marginBottom: 12 }}>
+              ⓘ Checks are configuration-based against each framework's rules.
+              For live compliance, use AWS Security Hub or GCP Security Command Center.
+            </div>
             {frameworks.map((f, i) => {
               const pct = Math.round(f.compliance_score)
               const color = frameworkColor(pct)
@@ -317,6 +320,10 @@ export default function ResultsDashboard({ result, onNewAnalysis, onHistory }) {
 
         {activeTab === 'security' && (
           <div>
+            <div style={{ fontSize: 11, fontFamily: 'JetBrains Mono', color: '#4a6fa5', padding: '8px 12px', background: 'rgba(99,179,237,0.04)', border: '1px solid rgba(99,179,237,0.08)', borderRadius: 6, marginBottom: 12 }}>
+              ⓘ Analysis is based on infrastructure configuration.
+              Runtime security requires AWS GuardDuty or GCP Security Command Center.
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 12, padding: '10px 14px', background: 'rgba(10,20,50,0.5)', borderRadius: 10, border: '1px solid rgba(99,179,237,0.08)' }}>
               <SecurityRing score={s.security_score} />
               <div style={{ fontSize: 11, color: '#64748b' }}>Security Score</div>
@@ -365,20 +372,15 @@ export default function ResultsDashboard({ result, onNewAnalysis, onHistory }) {
       )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <button
-          className="act-btn dl"
-          onClick={handleDownload}
-          disabled={downloading || isAnalyzeOnly}
-          title={isAnalyzeOnly ? 'No Terraform was generated for this run — analyze-only mode has no infrastructure target' : undefined}
-          style={isAnalyzeOnly ? { borderColor: 'rgba(99,179,237,0.1)', color: '#2d4a7a', cursor: 'not-allowed' } : undefined}
-        >
-          {downloading ? '···' : '⬇ Terraform'}
-        </button>
+        {!isAnalyzeOnly && (
+          <button className="act-btn dl" onClick={handleDownload} disabled={downloading}>
+            {downloading ? '···' : '⬇ Terraform'}
+          </button>
+        )}
         <button className="act-btn rp" onClick={handleReport}>📄 Report</button>
-        <button className="act-btn cp" onClick={() => navigator.clipboard.writeText(result?.run_id || '')}>⎘ ID</button>
       </div>
       <div style={{ marginTop: 6, fontSize: 10, fontFamily: 'JetBrains Mono', color: '#2d4a7a', textAlign: 'center' }}>
-        n new · h history · d download · r report
+        n new · h history{!isAnalyzeOnly ? ' · d download' : ''} · r report
       </div>
       {dlError && (
         <div style={{ marginTop: 8, padding: '8px 12px', background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 8, fontSize: 12, color: '#f87171' }}>
