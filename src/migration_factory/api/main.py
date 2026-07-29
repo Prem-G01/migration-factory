@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from migration_factory.ai.engine import AIEngine
@@ -65,6 +65,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs")
+
+
+@app.get("/health")
+async def health_shortcut() -> RedirectResponse:
+    return RedirectResponse(url="/api/v1/health")
+
 
 _Target = Literal["gcp", "aws", "analyze_only"]
 
