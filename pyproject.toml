@@ -34,6 +34,10 @@ api = [
     "python-multipart>=0.0.9",
     "sqlalchemy>=2.0,<3",
     "asyncpg>=0.29",
+    # sqlite+aiosqlite is what Render's free tier runs (no managed
+    # Postgres on that plan) via MF_DATABASE__URL -- needs the driver
+    # available outside of dev/test too.
+    "aiosqlite>=0.20",
     "alembic>=1.13",
 ]
 dev = [

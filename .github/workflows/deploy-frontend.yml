@@ -37,7 +37,7 @@ jobs:
         working-directory: frontend
         run: npm run build
         env:
-          NEXT_PUBLIC_API_URL: http://localhost:8000
+          NEXT_PUBLIC_API_URL: https://migration-factory.onrender.com
           GITHUB_PAGES: 'true'
 
       - name: Upload artifact

@@ -8,8 +8,10 @@ an API process restart; schema changes go through Alembic (`alembic/`).
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +19,8 @@ import time
 import uuid
 import zipfile
 from collections import Counter
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -34,6 +38,7 @@ from migration_factory.assessment.engine import AssessmentEngine
 from migration_factory.compliance.engine import ComplianceEngine
 from migration_factory.core.config import get_settings
 from migration_factory.core.exceptions import MigrationFactoryError, ParserError
+from migration_factory.core.logging import get_logger
 from migration_factory.discovery.engine import DiscoveryEngine
 from migration_factory.domain.enums import CloudProvider
 from migration_factory.events.engine import Event, EventBus, EventType
@@ -50,18 +55,63 @@ from migration_factory.translation.matrix import load_builtin_matrix
 from migration_factory.validation.engine import ValidationEngine
 
 _event_bus = EventBus()
+_logger = get_logger(__name__)
+
+
+def _run_migrations_sync() -> None:
+    """Applies pending Alembic migrations against the configured database.
+
+    Run in a worker thread by the lifespan hook below: Alembic's env.py
+    calls `asyncio.run(...)` internally, which cannot nest inside the event
+    loop this hook already runs in.
+    """
+    alembic_ini = Path.cwd() / "alembic.ini"
+    if not alembic_ini.exists():
+        _logger.warning("alembic_ini_not_found", cwd=str(Path.cwd()))
+        return
+    from alembic.config import Config
+
+    from alembic import command
+
+    try:
+        command.upgrade(Config(str(alembic_ini)), "head")
+    except Exception:
+        _logger.exception("startup_migration_failed")
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # The Docker image runs `alembic upgrade head` via docker-entrypoint.sh
+    # before uvicorn starts. Platforms with no separate release-phase step
+    # (e.g. Render's free tier with a bare `uvicorn ...` Start Command) skip
+    # that entirely, leaving a fresh DB with no migration_runs table. Run it
+    # here instead so a plain `uvicorn` start is still correct on its own --
+    # skipped under pytest since tests provision their own in-memory sqlite
+    # engine directly (see tests/unit/test_api.py) and would otherwise race
+    # this against a different, real database.
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        await asyncio.to_thread(_run_migrations_sync)
+    yield
+
 
 app = FastAPI(
     title="Migration Factory API",
     version="2.0.3",
     description="REST API for the AI-Powered Multi-Cloud Infrastructure Migration Factory",
+    lifespan=_lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
     # :5173/:3000 are the Vite/CRA dev servers; bare "http://localhost" is the
     # Docker Compose path (nginx serves the built frontend on port 80, and
     # browsers omit the port from the Origin header for the scheme's default).
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://localhost"],
+    # github.io is the production GitHub Pages frontend.
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost",
+        "https://prem-g01.github.io",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
