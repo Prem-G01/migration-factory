@@ -1598,6 +1598,12 @@ class TerraformGenerator:
 
         main_blocks: list[str] = []
         variable_blocks: list[str] = []
+        # Mirrors variable_blocks: one entry per declared variable, either a
+        # real/mapped value pulled from the source resource (active line) or
+        # a commented-out reminder when no source value exists to extract
+        # (secrets, external IDs like AMIs, file paths that must exist on
+        # disk). Assembled into terraform.tfvars below.
+        tfvars_lines: list[str] = []
         if self.target_provider is CloudProvider.AWS:
             variable_blocks.append('''variable "aws_region" {
   description = "AWS region to deploy migrated resources into"
@@ -1668,12 +1674,14 @@ class TerraformGenerator:
             main_blocks.append(block)
 
             # Generate variables for this resource
+            sanitized_name = _sanitize_name(resource.name)
             variable_blocks.append(f'''variable "{name}_name" {{
   description = "Name for migrated resource (source: {resource.name})"
   type        = string
-  default     = "{_sanitize_name(resource.name)}"
+  default     = "{sanitized_name}"
 }}
 ''')
+            tfvars_lines.append(f'{name}_name = "{sanitized_name}"  # From source: {resource.name}')
 
             if self.target_provider is CloudProvider.GCP:
                 if resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
@@ -1685,14 +1693,19 @@ class TerraformGenerator:
   default     = "{gcp_machine_type}"
 }}
 ''')
+                    tfvars_lines.append(
+                        f'{name}_machine_type = "{gcp_machine_type}"  # Mapped from {source_instance_type}'
+                    )
 
                 if resource.canonical_type is CanonicalResourceType.IAM_ROLE:
+                    account_id = _sanitize_name(resource.name)
                     variable_blocks.append(f'''variable "{name}_account_id" {{
   description = "GCP service account ID (source: {resource.name})"
   type        = string
-  default     = "{_sanitize_name(resource.name)}"
+  default     = "{account_id}"
 }}
 ''')
+                    tfvars_lines.append(f'{name}_account_id = "{account_id}"  # From source: {resource.name}')
 
                 if resource.canonical_type is CanonicalResourceType.COMPUTE_SERVERLESS_FUNCTION:
                     variable_blocks.append(f'''variable "{name}_source_zip_path" {{
@@ -1701,6 +1714,10 @@ class TerraformGenerator:
   default     = "{name}-source.zip"
 }}
 ''')
+                    tfvars_lines.append(
+                        f'# {name}_source_zip_path = "path/to/{name}-source.zip"  '
+                        f'# Set before apply — package the Lambda source for Cloud Functions'
+                    )
 
                 if resource.canonical_type is CanonicalResourceType.NETWORK_VPN:
                     variable_blocks.append(f'''variable "{name}_shared_secret" {{
@@ -1710,6 +1727,10 @@ class TerraformGenerator:
   sensitive   = true
 }}
 ''')
+                    tfvars_lines.append(
+                        f'# {name}_shared_secret = "YOUR_SECRET"  '
+                        f'# Set via TF_VAR_{name}_shared_secret env var, never commit a real value'
+                    )
 
                 if resource.canonical_type is CanonicalResourceType.NETWORK_PEERING:
                     variable_blocks.append(f'''variable "{name}_peer_network" {{
@@ -1718,6 +1739,9 @@ class TerraformGenerator:
   default     = ""
 }}
 ''')
+                    tfvars_lines.append(
+                        f'# {name}_peer_network = "YOUR_PEER_NETWORK_SELF_LINK"  # Set before apply'
+                    )
 
                 if resource.canonical_type is CanonicalResourceType.COMPUTE_CONTAINER_SERVICE:
                     variable_blocks.append(f'''variable "{name}_image" {{
@@ -1726,14 +1750,17 @@ class TerraformGenerator:
   default     = "gcr.io/cloudrun/hello"
 }}
 ''')
+                    tfvars_lines.append(f'# {name}_image = "YOUR_IMAGE"  # Set before apply — default is a placeholder')
 
                 if resource.canonical_type is CanonicalResourceType.STORAGE_BLOCK_VOLUME:
+                    disk_zone = f"{self.region}-a"
                     variable_blocks.append(f'''variable "{name}_zone" {{
   description = "GCP zone for the migrated persistent disk (source: {resource.name})"
   type        = string
-  default     = "{self.region}-a"
+  default     = "{disk_zone}"
 }}
 ''')
+                    tfvars_lines.append(f'{name}_zone = "{disk_zone}"  # Inferred from source region')
 
                 if resource.canonical_type is CanonicalResourceType.DNS_RECORD:
                     variable_blocks.append(f'''variable "{name}_managed_zone" {{
@@ -1748,6 +1775,8 @@ variable "{name}_value" {{
   default     = ""
 }}
 ''')
+                    tfvars_lines.append(f'# {name}_managed_zone = "YOUR_MANAGED_ZONE_NAME"  # Set before apply')
+                    tfvars_lines.append(f'# {name}_value = "YOUR_RECORD_VALUE"  # Set before apply')
 
             elif self.target_provider is CloudProvider.AWS:
                 if resource.canonical_type is CanonicalResourceType.NETWORK_VPC:
@@ -1757,8 +1786,12 @@ variable "{name}_value" {{
   default     = "10.0.0.0/16"
 }}
 ''')
+                    tfvars_lines.append(
+                        f'{name}_cidr_block = "10.0.0.0/16"  # Default — GCP source has no VPC-level CIDR, review before apply'
+                    )
 
                 if resource.canonical_type is CanonicalResourceType.NETWORK_SUBNET:
+                    has_source_cidr = "ip_cidr_range" in resource.native_attributes
                     cidr = resource.native_attributes.get("ip_cidr_range", "10.0.1.0/24")
                     variable_blocks.append(f'''variable "{name}_cidr_block" {{
   description = "AWS subnet CIDR block (source ip_cidr_range: {cidr})"
@@ -1772,6 +1805,12 @@ variable "{name}_availability_zone" {{
   default     = "us-east-1a"
 }}
 ''')
+                    cidr_comment = "From source ip_cidr_range" if has_source_cidr else "Default — no source CIDR found"
+                    tfvars_lines.append(f'{name}_cidr_block = "{cidr}"  # {cidr_comment}')
+                    tfvars_lines.append(
+                        f'# {name}_availability_zone = "YOUR_AZ"  '
+                        f'# Set before apply — no AWS AZ equivalent in GCP source data'
+                    )
 
                 if resource.canonical_type is CanonicalResourceType.COMPUTE_INSTANCE:
                     variable_blocks.append(f'''variable "{name}_ami" {{
@@ -1780,6 +1819,7 @@ variable "{name}_availability_zone" {{
   default     = "ami-0abcdef1234567890"
 }}
 ''')
+                    tfvars_lines.append(f'# {name}_ami = "YOUR_AMI_ID"  # Set before apply')
 
                 if resource.canonical_type is CanonicalResourceType.COMPUTE_SERVERLESS_FUNCTION:
                     variable_blocks.append(f'''variable "{name}_filename" {{
@@ -1788,6 +1828,10 @@ variable "{name}_availability_zone" {{
   default     = "{name}.zip"
 }}
 ''')
+                    tfvars_lines.append(
+                        f'# {name}_filename = "path/to/{name}.zip"  '
+                        f'# Set before apply — package the Cloud Function source for Lambda'
+                    )
 
                 if resource.canonical_type is CanonicalResourceType.DATABASE_INSTANCE:
                     variable_blocks.append(f'''variable "{name}_db_name" {{
@@ -1809,6 +1853,12 @@ variable "{name}_password" {{
   sensitive   = true
 }}
 ''')
+                    tfvars_lines.append(f'{name}_db_name = "appdb"  # Default — review before apply')
+                    tfvars_lines.append(f'{name}_username = "dbadmin"  # Default — review before apply')
+                    tfvars_lines.append(
+                        f'# {name}_password = "YOUR_PASSWORD"  '
+                        f'# Set via TF_VAR_{name}_password env var, never commit a real value'
+                    )
 
             generated_count += 1
 
@@ -1855,12 +1905,17 @@ variable "{name}_password" {{
             ),
             GeneratedFile(
                 filename="terraform.tfvars",
-                content=(
-                    '# Override variables here\n# aws_region = "us-east-1"\n'
-                    if self.target_provider is CloudProvider.AWS
-                    else f'# Override variables here\n# project_id = "{self.project_id}"\n'
+                content=self._generate_tfvars(tfvars_lines),
+                description="Variable overrides, pre-filled from the source infrastructure",
+            ),
+            GeneratedFile(
+                filename="MIGRATION_GUIDE.md",
+                content=self._generate_migration_guide(
+                    translation.source_provider.value,
+                    self.target_provider.value,
+                    generated_count,
                 ),
-                description="Variable overrides",
+                description="Migration guide and deployment instructions",
             ),
         ]
 
@@ -1880,6 +1935,82 @@ variable "{name}_password" {{
             files=len(files),
         )
         return report
+
+    def _generate_tfvars(self, tfvars_lines: list[str]) -> str:
+        provider_override = (
+            '# aws_region = "us-east-1"\n'
+            if self.target_provider is CloudProvider.AWS
+            else f'# project_id = "{self.project_id}"\n'
+        )
+        header = (
+            "# Variable overrides for this migration.\n"
+            "# Active lines were extracted or mapped from the source infrastructure.\n"
+            "# Commented-out lines have no source equivalent -- set a real value\n"
+            "# before `terraform apply`.\n"
+        )
+        if not tfvars_lines:
+            return header + provider_override
+        return header + provider_override + "\n" + "\n".join(tfvars_lines) + "\n"
+
+    def _generate_migration_guide(
+        self,
+        source_provider: str,
+        target_provider: str,
+        resource_count: int,
+    ) -> str:
+        return f"""# Migration Guide
+
+## Generated by Migration Factory v2.0.3
+
+### Before You Apply
+
+1. **Review all variables** in `terraform.tfvars`
+   - Replace any `YOUR_*` placeholders with real values
+   - Set passwords via environment variables, not in tfvars
+
+2. **Configure backend** in `backend.tf`
+   - Uncomment and configure remote state backend
+   - Or keep commented for local state (testing only)
+
+3. **Initialize Terraform**
+```bash
+   terraform init
+```
+
+4. **Review the plan**
+```bash
+   terraform plan -out=migration.plan
+```
+   Review EVERY resource before proceeding.
+
+5. **Apply in waves** (do NOT apply all at once)
+   - Wave 1: Networking (VPC, subnets, firewall rules)
+   - Wave 2: IAM (roles, service accounts)
+   - Wave 3: Storage (buckets, disks)
+   - Wave 4: Compute (instances, clusters)
+   - Wave 5: Application (load balancers, DNS)
+
+### Known Manual Steps Required
+
+- **IAM permissions**: Roles are created but policies need manual review
+- **Secret values**: Created in Secret Manager but values must be added manually
+- **SSL certificates**: Certificate resources created but domain validation required
+- **DNS cutover**: Update NS records at registrar LAST (causes downtime)
+
+### Important Notes
+
+- This Terraform was generated from infrastructure analysis
+- Costs shown are ESTIMATES based on on-demand pricing
+- Compliance scores are CONFIGURATION-BASED (not live audit)
+- Always test in a non-production environment first
+
+### Support
+
+Generated by: Migration Factory
+Source: {source_provider.upper()}
+Target: {target_provider.upper()}
+Resources: {resource_count}
+"""
 
     def write(self, report: TerraformGenerationReport, output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1947,34 +2078,35 @@ variable "region" {{
 '''
 
     def _generate_backend(self) -> str:
-        # NOTE: Terraform backend blocks cannot reference variables, locals,
-        # or any other computed value — the bucket name below must be a
-        # literal string. (`bucket = var.tfstate_bucket` fails `terraform
-        # init` with "Error: Variables not allowed".) The placeholder is
-        # called out explicitly instead so the failure mode is a clear
-        # bucket-doesn't-exist error rather than a silent default.
+        # Backend blocks cannot reference variables, locals, or any other
+        # computed value -- the bucket name has to be a literal string
+        # pointing at a bucket that doesn't exist yet, which previously made
+        # `terraform init` fail immediately (it tries to configure the
+        # backend even before the bucket is real). Commented out by default
+        # so init works against local state right away; uncomment once a
+        # real state bucket exists.
         if self.target_provider is CloudProvider.AWS:
-            return '''# TODO: Set this to your own S3 bucket for Terraform state before running
-# `terraform init` (backend blocks cannot use variables — this must be a
-# literal string, or overridden with `terraform init -backend-config="bucket=YOUR_BUCKET"`).
-# Create the bucket first: aws s3 mb s3://YOUR_PROJECT-tfstate
-terraform {
-  backend "s3" {
-    bucket = "migration-factory-tfstate"
-    key    = "migration/terraform.tfstate"
-    region = "us-east-1"
-  }
+            return '''terraform {
+  # Remote state configuration (commented out by default).
+  # Uncomment and configure before running terraform apply.
+  # Create the bucket first: aws s3 mb s3://YOUR_BUCKET_NAME-tfstate
+  #
+  # backend "s3" {
+  #   bucket = "YOUR_BUCKET_NAME-tfstate"
+  #   key    = "migration-factory/terraform.tfstate"
+  #   region = "us-east-1"
+  # }
 }
 '''
-        return f'''# TODO: Set this to your own GCS bucket for Terraform state before running
-# `terraform init` (backend blocks cannot use variables — this must be a
-# literal string, or overridden with `terraform init -backend-config="bucket=YOUR_BUCKET"`).
-# Create the bucket first: gsutil mb gs://YOUR_PROJECT-tfstate
-terraform {{
-  backend "gcs" {{
-    bucket = "{self.project_id}-tfstate"
-    prefix = "migration"
-  }}
+        return f'''terraform {{
+  # Remote state configuration (commented out by default).
+  # Uncomment and configure before running terraform apply.
+  # Create the bucket first: gsutil mb gs://{self.project_id}-tfstate
+  #
+  # backend "gcs" {{
+  #   bucket = "{self.project_id}-tfstate"
+  #   prefix = "migration-factory/state"
+  # }}
 }}
 '''
 
