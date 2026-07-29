@@ -37,12 +37,13 @@ jobs:
         working-directory: frontend
         run: npm run build
         env:
-          VITE_API_URL: http://localhost:8000
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+          GITHUB_PAGES: 'true'
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: frontend/dist
+          path: frontend/out
 
   deploy:
     environment:
