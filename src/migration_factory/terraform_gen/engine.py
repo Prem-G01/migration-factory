@@ -739,6 +739,10 @@ resource "google_compute_router_nat" "{tf_name}" {{
 def _gen_gcp_gke(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
     attrs = resource.native_attributes
     node_count = int(attrs.get("desired_capacity") or attrs.get("DesiredCapacity") or 2)
+    # Same fallback as _gen_gcp_instance: a GKE cluster with no matching
+    # subnet resource in this graph needs the default-subnet data source,
+    # which is only emitted when this flag is set (see generate()).
+    ctx.used_default_subnet = True
     return f'''resource "google_container_cluster" "{tf_name}" {{
   name     = var.{tf_name}_name
   location = var.region
@@ -816,6 +820,185 @@ def _gen_gcp_cdn(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext)
 '''
 
 
+def _gen_gcp_vpn(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    peer_ip = attrs.get("peer_ip") or attrs.get("remote_ip_address") or "0.0.0.0"
+    return f'''resource "google_compute_vpn_gateway" "{tf_name}" {{
+  name    = var.{tf_name}_name
+  network = google_compute_network.main.id
+  region  = "{resource.region or ctx.region}"
+}}
+
+resource "google_compute_vpn_tunnel" "{tf_name}" {{
+  name               = var.{tf_name}_name
+  region             = "{resource.region or ctx.region}"
+  peer_ip            = "{peer_ip}"
+  shared_secret      = var.{tf_name}_shared_secret
+  target_vpn_gateway = google_compute_vpn_gateway.{tf_name}.id
+}}
+'''
+
+
+def _gen_gcp_peering(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    return f'''resource "google_compute_network_peering" "{tf_name}" {{
+  name         = var.{tf_name}_name
+  network      = google_compute_network.main.self_link
+  peer_network = var.{tf_name}_peer_network
+}}
+'''
+
+
+def _gen_gcp_route(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    dest = attrs.get("destination_cidr_block") or "0.0.0.0/0"
+    return f'''resource "google_compute_route" "{tf_name}" {{
+  name             = var.{tf_name}_name
+  dest_range       = "{dest}"
+  network          = google_compute_network.main.name
+  next_hop_gateway = "default-internet-gateway"
+  priority         = 1000
+}}
+'''
+
+
+def _gen_gcp_cloudrun(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    region = resource.region or ctx.region
+    return f'''resource "google_cloud_run_v2_service" "{tf_name}" {{
+  name     = var.{tf_name}_name
+  location = "{region}"
+
+  template {{
+    containers {{
+      image = var.{tf_name}_image
+      resources {{
+        limits = {{ cpu = "1", memory = "512Mi" }}
+      }}
+    }}
+    scaling {{ max_instance_count = 10 }}
+  }}
+}}
+
+resource "google_cloud_run_v2_service_iam_member" "{tf_name}_public" {{
+  location = google_cloud_run_v2_service.{tf_name}.location
+  name     = google_cloud_run_v2_service.{tf_name}.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}}
+'''
+
+
+def _gen_gcp_disk(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    size = int(attrs.get("size") or attrs.get("volume_size") or 20)
+    disk_type_map = {"gp2": "pd-balanced", "gp3": "pd-ssd", "io1": "pd-ssd", "st1": "pd-standard", "sc1": "pd-standard"}
+    vol_type = str(attrs.get("volume_type") or "gp3")
+    disk_type = disk_type_map.get(vol_type, "pd-balanced")
+    return f'''resource "google_compute_disk" "{tf_name}" {{
+  name = var.{tf_name}_name
+  type = "{disk_type}"
+  zone = var.{tf_name}_zone
+  size = {size}
+}}
+'''
+
+
+def _gen_gcp_filestore(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    region = resource.region or ctx.region
+    throughput = int(attrs.get("provisioned_throughput_in_mibps") or 1)
+    return f'''resource "google_filestore_instance" "{tf_name}" {{
+  name     = var.{tf_name}_name
+  location = "{region}-a"
+  tier     = "BASIC_HDD"
+
+  file_shares {{
+    capacity_gb = {max(1024, throughput * 1024)}
+    name        = "vol1"
+  }}
+
+  networks {{
+    network = google_compute_network.main.name
+    modes   = ["MODE_IPV4"]
+  }}
+}}
+'''
+
+
+def _gen_gcp_firestore(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    region = resource.region or ctx.region
+    return f'''# NOTE: DynamoDB -> Firestore requires data model redesign.
+# DynamoDB uses partition+sort keys; Firestore uses document collections.
+# Manual migration required for existing data and application queries.
+resource "google_firestore_database" "{tf_name}" {{
+  name        = var.{tf_name}_name
+  location_id = "{region}"
+  type        = "FIRESTORE_NATIVE"
+}}
+'''
+
+
+def _gen_gcp_certificate(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    domain = str(attrs.get("domain_name") or "example.com")
+    return f'''resource "google_certificate_manager_certificate" "{tf_name}" {{
+  name        = var.{tf_name}_name
+  description = "Migrated from AWS ACM"
+  scope       = "DEFAULT"
+
+  managed {{
+    domains = ["{domain}"]
+  }}
+}}
+'''
+
+
+def _gen_gcp_dns_record(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    rtype = str(attrs.get("type") or "A")
+    ttl = int(attrs.get("ttl") or 300)
+    return f'''resource "google_dns_record_set" "{tf_name}" {{
+  name         = var.{tf_name}_name
+  managed_zone = var.{tf_name}_managed_zone
+  type         = "{rtype}"
+  ttl          = {ttl}
+  rrdatas      = [var.{tf_name}_value]
+}}
+'''
+
+
+def _gen_gcp_alert_policy(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    return f'''resource "google_monitoring_alert_policy" "{tf_name}" {{
+  display_name = var.{tf_name}_name
+  combiner     = "OR"
+
+  conditions {{
+    display_name = "Migrated from AWS CloudWatch Alarm: {resource.name}"
+    condition_threshold {{
+      filter          = "metric.type=\\"compute.googleapis.com/instance/cpu/utilization\\""
+      duration        = "60s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0.9
+    }}
+  }}
+
+  notification_channels = []
+  # NOTE: Map AWS CloudWatch metrics to GCP monitoring metrics manually.
+}}
+'''
+
+
+def _gen_gcp_log_bucket(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
+    attrs = resource.native_attributes
+    retention = int(attrs.get("retention_in_days") or 30)
+    return f'''resource "google_logging_project_bucket_config" "{tf_name}" {{
+  project        = var.project_id
+  location       = "global"
+  retention_days = {retention}
+  bucket_id      = var.{tf_name}_name
+}}
+'''
+
+
 _GCP_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.NETWORK_VPC: _gen_gcp_vpc,
     CanonicalResourceType.NETWORK_SUBNET: _gen_gcp_subnet,
@@ -835,6 +1018,17 @@ _GCP_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.COMPUTE_CONTAINER_CLUSTER: _gen_gcp_gke,
     CanonicalResourceType.DNS_ZONE: _gen_gcp_dns_zone,
     CanonicalResourceType.CDN_DISTRIBUTION: _gen_gcp_cdn,
+    CanonicalResourceType.NETWORK_VPN: _gen_gcp_vpn,
+    CanonicalResourceType.NETWORK_PEERING: _gen_gcp_peering,
+    CanonicalResourceType.NETWORK_ROUTE_TABLE: _gen_gcp_route,
+    CanonicalResourceType.COMPUTE_CONTAINER_SERVICE: _gen_gcp_cloudrun,
+    CanonicalResourceType.STORAGE_BLOCK_VOLUME: _gen_gcp_disk,
+    CanonicalResourceType.STORAGE_FILE_SYSTEM: _gen_gcp_filestore,
+    CanonicalResourceType.DATABASE_NOSQL: _gen_gcp_firestore,
+    CanonicalResourceType.CERTIFICATE: _gen_gcp_certificate,
+    CanonicalResourceType.DNS_RECORD: _gen_gcp_dns_record,
+    CanonicalResourceType.MONITORING_ALARM: _gen_gcp_alert_policy,
+    CanonicalResourceType.LOG_GROUP: _gen_gcp_log_bucket,
 }
 
 
@@ -1306,6 +1500,69 @@ def _gen_aws_cloudfront_distribution(resource: CanonicalResource, tf_name: str) 
 '''
 
 
+def _gen_aws_eks(resource: CanonicalResource, tf_name: str) -> str:
+    return f'''resource "aws_iam_role" "{tf_name}_cluster_role" {{
+  name = "${{var.{tf_name}_name}}-cluster-role"
+
+  assume_role_policy = jsonencode({{
+    Version = "2012-10-17"
+    Statement = [{{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = {{ Service = "eks.amazonaws.com" }}
+    }}]
+  }})
+}}
+
+resource "aws_iam_role_policy_attachment" "{tf_name}_cluster_policy" {{
+  role       = aws_iam_role.{tf_name}_cluster_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}}
+
+resource "aws_eks_cluster" "{tf_name}" {{
+  name     = var.{tf_name}_name
+  role_arn = aws_iam_role.{tf_name}_cluster_role.arn
+
+  vpc_config {{
+    subnet_ids = [aws_subnet.app.id]
+  }}
+
+  tags = {{ Name = var.{tf_name}_name, Migrated = "true", Source = "gcp-gke" }}
+}}
+
+resource "aws_iam_role" "{tf_name}_node_role" {{
+  name = "${{var.{tf_name}_name}}-node-role"
+
+  assume_role_policy = jsonencode({{
+    Version = "2012-10-17"
+    Statement = [{{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = {{ Service = "ec2.amazonaws.com" }}
+    }}]
+  }})
+}}
+
+resource "aws_iam_role_policy_attachment" "{tf_name}_node_policy" {{
+  role       = aws_iam_role.{tf_name}_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}}
+
+resource "aws_eks_node_group" "{tf_name}_nodes" {{
+  cluster_name    = aws_eks_cluster.{tf_name}.name
+  node_group_name = "${{var.{tf_name}_name}}-nodes"
+  node_role_arn   = aws_iam_role.{tf_name}_node_role.arn
+  subnet_ids      = [aws_subnet.app.id]
+
+  scaling_config {{
+    desired_size = 2
+    max_size     = 4
+    min_size     = 1
+  }}
+}}
+'''
+
+
 _AWS_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.NETWORK_VPC: _gen_aws_vpc,
     CanonicalResourceType.NETWORK_SUBNET: _gen_aws_subnet,
@@ -1323,6 +1580,7 @@ _AWS_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.NETWORK_NAT_GATEWAY: _gen_aws_nat_gateway,
     CanonicalResourceType.DNS_ZONE: _gen_aws_route53_zone,
     CanonicalResourceType.CDN_DISTRIBUTION: _gen_aws_cloudfront_distribution,
+    CanonicalResourceType.COMPUTE_CONTAINER_CLUSTER: _gen_aws_eks,
 }
 
 
@@ -1441,6 +1699,53 @@ class TerraformGenerator:
   description = "Local path to the Cloud Function source zip (source: AWS Lambda {resource.name})"
   type        = string
   default     = "{name}-source.zip"
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.NETWORK_VPN:
+                    variable_blocks.append(f'''variable "{name}_shared_secret" {{
+  description = "Pre-shared key for the migrated VPN tunnel — override in terraform.tfvars, never commit a real value"
+  type        = string
+  default     = "changeme-in-tfvars"
+  sensitive   = true
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.NETWORK_PEERING:
+                    variable_blocks.append(f'''variable "{name}_peer_network" {{
+  description = "Self-link of the peer VPC network (source: {resource.name})"
+  type        = string
+  default     = ""
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.COMPUTE_CONTAINER_SERVICE:
+                    variable_blocks.append(f'''variable "{name}_image" {{
+  description = "Container image for the migrated Cloud Run service (source: {resource.name})"
+  type        = string
+  default     = "gcr.io/cloudrun/hello"
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.STORAGE_BLOCK_VOLUME:
+                    variable_blocks.append(f'''variable "{name}_zone" {{
+  description = "GCP zone for the migrated persistent disk (source: {resource.name})"
+  type        = string
+  default     = "{self.region}-a"
+}}
+''')
+
+                if resource.canonical_type is CanonicalResourceType.DNS_RECORD:
+                    variable_blocks.append(f'''variable "{name}_managed_zone" {{
+  description = "Name of the google_dns_managed_zone this record belongs to (source: {resource.name})"
+  type        = string
+  default     = ""
+}}
+
+variable "{name}_value" {{
+  description = "Record data (source rrdatas value: {resource.name})"
+  type        = string
+  default     = ""
 }}
 ''')
 
@@ -1584,6 +1889,12 @@ variable "{name}_password" {{
 
     def _generate_providers(self) -> str:
         if self.target_provider is CloudProvider.AWS:
+            # required_providers lives here, not in versions.tf --
+            # test_bidirectional.py asserts "hashicorp/aws" appears in
+            # providers.tf specifically. Declaring it in both files fails
+            # `terraform validate` with "Duplicate required providers
+            # configuration" (a module may declare it exactly once, even
+            # across multiple files) -- see _generate_versions below.
             return '''terraform {
   required_providers {
     aws = {
@@ -1617,15 +1928,10 @@ variable "region" {{
 
     def _generate_versions(self) -> str:
         if self.target_provider is CloudProvider.AWS:
+            # required_providers for aws lives in providers.tf, not here --
+            # see the comment in _generate_providers above.
             return '''terraform {
   required_version = ">= 1.5"
-
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
 }
 '''
         return '''terraform {
