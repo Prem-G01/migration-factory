@@ -1,3 +1,6 @@
+/* Inter + JetBrains Mono are loaded via next/font/google in layout.tsx
+   (self-hosted, no render-blocking external request) rather than a CSS
+   @import — the fonts are the same, just loaded the performant way. */
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -49,55 +52,137 @@
 }
 
 /* This app is permanently dark — there is no light-mode toggle, so the
-   root tokens ARE the dark tokens (not shadcn's default light palette). */
+   root tokens ARE the dark tokens (not shadcn's default light palette).
+   Named tokens (--void, --cyan, etc.) are the source of truth, mirrored
+   in src/constants/theme.ts for use in JS (canvas, SVG, chart colors).
+   The --color-* / shadcn semantic tokens below just alias them so
+   Button/Card/Tabs and the rest of the shadcn primitives pick up the
+   same palette automatically. */
 :root,
 .dark {
-  --background: #020818;
-  --foreground: #e2e8f0;
-  --card: rgba(10, 20, 50, 0.6);
-  --card-foreground: #e2e8f0;
-  --popover: #0a1122;
-  --popover-foreground: #e2e8f0;
-  --primary: #60a5fa;
-  --primary-foreground: #020818;
-  --secondary: rgba(10, 20, 50, 0.8);
-  --secondary-foreground: #e2e8f0;
-  --muted: rgba(10, 20, 50, 0.4);
-  --muted-foreground: #4a6fa5;
-  --accent: rgba(99, 179, 237, 0.1);
-  --accent-foreground: #60a5fa;
-  --destructive: #f87171;
-  --border: rgba(99, 179, 237, 0.1);
-  --input: rgba(99, 179, 237, 0.15);
-  --ring: rgba(99, 179, 237, 0.4);
-  --chart-1: #60a5fa;
-  --chart-2: #34d399;
-  --chart-3: #fbbf24;
-  --chart-4: #a78bfa;
-  --chart-5: #fb923c;
+  --void: #020818;
+  --surface: #0d1117;
+  --raised: #161b22;
+  --border-c: #21262d;
+  --cyan: #00d4ff;
+  --green: #00ff88;
+  --orange: #ff6b35;
+  --purple: #8b5cf6;
+  --yellow: #f59e0b;
+  --red: #ef4444;
+  --text: #f0f6fc;
+  --muted-c: #8b949e;
+  --dim: #3d444d;
+
+  --background: var(--void);
+  --foreground: var(--text);
+  --card: var(--surface);
+  --card-foreground: var(--text);
+  --popover: var(--raised);
+  --popover-foreground: var(--text);
+  --primary: var(--cyan);
+  --primary-foreground: var(--void);
+  --secondary: var(--raised);
+  --secondary-foreground: var(--text);
+  --muted: var(--surface);
+  --muted-foreground: var(--muted-c);
+  --accent: rgba(0, 212, 255, 0.1);
+  --accent-foreground: var(--cyan);
+  --destructive: var(--red);
+  --border: var(--border-c);
+  --input: var(--border-c);
+  --ring: rgba(0, 212, 255, 0.4);
+  --chart-1: var(--cyan);
+  --chart-2: var(--green);
+  --chart-3: var(--yellow);
+  --chart-4: var(--purple);
+  --chart-5: var(--orange);
   --radius: 0.625rem;
-  --sidebar: #0a1122;
-  --sidebar-foreground: #e2e8f0;
-  --sidebar-primary: #60a5fa;
-  --sidebar-primary-foreground: #020818;
-  --sidebar-accent: rgba(99, 179, 237, 0.08);
-  --sidebar-accent-foreground: #60a5fa;
-  --sidebar-border: rgba(99, 179, 237, 0.08);
-  --sidebar-ring: rgba(99, 179, 237, 0.4);
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--text);
+  --sidebar-primary: var(--cyan);
+  --sidebar-primary-foreground: var(--void);
+  --sidebar-accent: rgba(0, 212, 255, 0.08);
+  --sidebar-accent-foreground: var(--cyan);
+  --sidebar-border: var(--border-c);
+  --sidebar-ring: rgba(0, 212, 255, 0.4);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  html,
   body {
-    @apply bg-background text-foreground;
-    background-image:
-      radial-gradient(ellipse 80% 50% at 20% 0%, rgba(59, 130, 246, 0.08), transparent),
-      radial-gradient(ellipse 60% 40% at 85% 15%, rgba(167, 139, 250, 0.06), transparent);
-    background-attachment: fixed;
+    @apply bg-background text-foreground font-sans;
+    font-size: 16px;
+    line-height: 1.6;
+    overflow-x: hidden;
   }
-  html {
-    @apply font-sans;
-  }
+}
+
+/* ---- Animations ---- */
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(0, 212, 255, 0.3); }
+  50%       { box-shadow: 0 0 24px rgba(0, 212, 255, 0.6); }
+}
+
+@keyframes bounceDots {
+  0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
+  40%           { transform: scale(1.2); opacity: 1; }
+}
+
+@keyframes countUp {
+  from { opacity: 0; transform: scale(0.5); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@property --angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes borderSpin {
+  to { --angle: 360deg; }
+}
+
+.animate-fade-up { animation: fadeUp 0.4s ease forwards; }
+.animate-glow    { animation: glow 2s ease-in-out infinite; }
+.animate-slide   { animation: slideInRight 0.3s ease forwards; }
+
+.upload-zone-border {
+  --angle: 0deg;
+  background: conic-gradient(from var(--angle), transparent 20%, var(--cyan), transparent 80%) border-box;
+  animation: borderSpin 3s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upload-zone-border { animation: none; }
+  .animate-glow { animation: none; }
+}
+
+/* ---- Scrollbar ---- */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0, 212, 255, 0.2); border-radius: 2px; }
+
+/* ---- Card hover ---- */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }

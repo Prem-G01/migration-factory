@@ -28,7 +28,7 @@ export function GlassCard({
       )}
       whileHover={
         hoverElevate
-          ? { y: -2, borderColor: "rgba(96,165,250,0.25)" }
+          ? { y: -2, borderColor: "rgba(0,212,255,0.25)" }
           : undefined
       }
       transition={{ duration: 0.2, ease: "easeOut" }}

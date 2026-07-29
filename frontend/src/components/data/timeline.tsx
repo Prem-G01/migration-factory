@@ -13,7 +13,7 @@ export function WaveTimeline({ waves }: { waves: MigrationWave[] }) {
     <div className="relative">
       <div
         className="absolute top-5 bottom-5 left-[15px] w-px"
-        style={{ background: "rgba(99,179,237,0.15)" }}
+        style={{ background: "rgba(0,212,255,0.15)" }}
       />
       <div className="flex flex-col gap-2">
         {waves.map((wave, i) => (
@@ -38,13 +38,13 @@ export function WaveTimeline({ waves }: { waves: MigrationWave[] }) {
             <span
               className="rounded-full border px-2 py-0.5 font-mono text-[10px]"
               style={{
-                color: wave.can_parallelize ? COLORS.accentGreen : COLORS.accentYellow,
+                color: wave.can_parallelize ? COLORS.green : COLORS.yellow,
                 borderColor: wave.can_parallelize
-                  ? "rgba(52,211,153,0.25)"
-                  : "rgba(251,191,36,0.25)",
+                  ? "rgba(0,255,136,0.25)"
+                  : "rgba(245,158,11,0.25)",
                 background: wave.can_parallelize
-                  ? "rgba(52,211,153,0.08)"
-                  : "rgba(251,191,36,0.08)",
+                  ? "rgba(0,255,136,0.08)"
+                  : "rgba(245,158,11,0.08)",
               }}
             >
               {wave.can_parallelize ? "⚡ Parallel" : "→ Sequential"}

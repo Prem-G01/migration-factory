@@ -1,58 +1,56 @@
 /**
  * Single source of truth for design tokens that need to exist as JS
- * values too (chart series colors, canvas/SVG strokes) — not just CSS.
+ * values too (canvas/SVG strokes, chart series colors) — not just CSS.
  * Mirrors the CSS custom properties in globals.css; keep both in sync.
  */
 
 export const COLORS = {
-  bgVoid: "#020818",
-  bgSurface: "#0a1122",
-  bgRaised: "rgba(10,20,50,0.6)",
-  border: "rgba(99,179,237,0.1)",
-  textPrimary: "#e2e8f0",
-  textSecondary: "#94a3b8",
-  textMuted: "#4a6fa5",
-  textDim: "#2d4a7a",
-  accentCyan: "#60a5fa",
-  accentBlue: "#3b82f6",
-  accentGreen: "#34d399",
-  accentYellow: "#fbbf24",
-  accentOrange: "#fb923c",
-  accentRed: "#f87171",
-  accentPurple: "#a78bfa",
+  void: "#020818",
+  surface: "#0D1117",
+  raised: "#161B22",
+  border: "#21262D",
+  cyan: "#00D4FF",
+  green: "#00FF88",
+  orange: "#FF6B35",
+  purple: "#8B5CF6",
+  yellow: "#F59E0B",
+  red: "#EF4444",
+  text: "#F0F6FC",
+  muted: "#8B949E",
+  dim: "#3D444D",
 } as const;
 
 export const RISK_COLORS: Record<string, string> = {
-  low: COLORS.accentGreen,
-  medium: COLORS.accentYellow,
-  high: COLORS.accentRed,
-  critical: "#ef4444",
+  low: COLORS.green,
+  medium: COLORS.yellow,
+  high: COLORS.red,
+  critical: "#dc2626",
 };
 
 export const STRATEGY_COLORS: Record<string, string> = {
-  rehost: COLORS.accentGreen,
-  replatform: COLORS.accentYellow,
-  manual: COLORS.accentOrange,
-  unsupported: COLORS.accentRed,
+  rehost: COLORS.green,
+  replatform: COLORS.yellow,
+  manual: COLORS.orange,
+  unsupported: COLORS.red,
 };
 
 /** Score is "higher is better" (confidence, security) unless inverted
  * (complexity, where higher = harder/riskier). */
 export function scoreColor(score: number, invert = false): string {
   if (invert) {
-    if (score <= 30) return COLORS.accentGreen;
-    if (score <= 60) return COLORS.accentYellow;
-    return COLORS.accentRed;
+    if (score <= 30) return COLORS.green;
+    if (score <= 60) return COLORS.yellow;
+    return COLORS.red;
   }
-  if (score >= 70) return COLORS.accentGreen;
-  if (score >= 40) return COLORS.accentYellow;
-  return COLORS.accentRed;
+  if (score >= 70) return COLORS.green;
+  if (score >= 40) return COLORS.yellow;
+  return COLORS.red;
 }
 
 export function directionColor(direction: string): string {
   const awsIdx = direction.indexOf("AWS");
   const gcpIdx = direction.indexOf("GCP");
-  if (awsIdx !== -1 && gcpIdx !== -1 && awsIdx < gcpIdx) return COLORS.accentGreen;
-  if (gcpIdx !== -1 && awsIdx !== -1 && gcpIdx < awsIdx) return COLORS.accentOrange;
-  return COLORS.accentPurple;
+  if (awsIdx !== -1 && gcpIdx !== -1 && awsIdx < gcpIdx) return COLORS.green;
+  if (gcpIdx !== -1 && awsIdx !== -1 && gcpIdx < awsIdx) return COLORS.orange;
+  return COLORS.purple;
 }

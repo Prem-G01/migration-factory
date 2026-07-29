@@ -2,9 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   analyzeFile,
   analyzeRawData,
-  deleteRun,
   discoverAws,
-  discoverGcp,
   downloadTerraform,
   getHealth,
   getReport,
@@ -69,16 +67,6 @@ export function useAnalyzeRawData() {
   });
 }
 
-export function useDeleteRun() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (runId: string) => deleteRun(runId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.runs });
-    },
-  });
-}
-
 export function useDownloadTerraform() {
   return useMutation({
     mutationFn: (runId: string) => downloadTerraform(runId),
@@ -88,12 +76,5 @@ export function useDownloadTerraform() {
 export function useDiscoverAws() {
   return useMutation({
     mutationFn: (region: string) => discoverAws(region),
-  });
-}
-
-export function useDiscoverGcp() {
-  return useMutation({
-    mutationFn: ({ projectId, region }: { projectId: string; region?: string }) =>
-      discoverGcp(projectId, region),
   });
 }

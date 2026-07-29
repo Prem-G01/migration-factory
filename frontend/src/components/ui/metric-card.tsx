@@ -29,7 +29,7 @@ export function MetricCard({
   return (
     <GlassCard accent={color} className={cn("flex flex-col gap-1", className)}>
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+        <span className="font-mono text-xs uppercase tracking-wider text-muted-foreground">
           {label}
         </span>
         {icon && (
@@ -39,7 +39,7 @@ export function MetricCard({
         )}
       </div>
       <div
-        className="font-mono text-2xl leading-none font-semibold"
+        className="font-mono text-[32px] leading-none font-bold"
         style={{ color }}
       >
         {typeof value === "number" ? (
@@ -48,7 +48,7 @@ export function MetricCard({
           <span>{value}</span>
         )}
       </div>
-      {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
+      {sub && <div className="text-[13px] text-muted-foreground">{sub}</div>}
     </GlassCard>
   );
 }

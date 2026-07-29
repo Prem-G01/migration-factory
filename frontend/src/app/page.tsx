@@ -1,5 +1,5 @@
-import { UploadPage } from "@/features/upload/upload-page";
+import { AnalyzePage } from "@/features/analyze/analyze-page";
 
 export default function Home() {
-  return <UploadPage />;
+  return <AnalyzePage />;
 }
