@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from migration_factory.api.auth import verify_api_key
 from migration_factory.api.database import Base, get_session
 from migration_factory.api.main import app
 
@@ -46,6 +47,10 @@ async def _override_get_session() -> AsyncGenerator[AsyncSession]:
 
 
 app.dependency_overrides[get_session] = _override_get_session
+# These tests exercise business logic, not auth -- auth has its own
+# dedicated coverage in test_auth.py, with its own TestClient that does
+# NOT override this dependency.
+app.dependency_overrides[verify_api_key] = lambda: "test-key"
 
 client = TestClient(app)
 

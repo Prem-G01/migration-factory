@@ -31,9 +31,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from migration_factory.ai.engine import AIEngine
+from migration_factory.api.auth import verify_api_key
 from migration_factory.api.database import MigrationRun, get_run, get_session, save_run
 from migration_factory.api.database import delete_run as db_delete_run
 from migration_factory.api.database import list_runs as db_list_runs
+from migration_factory.api.middleware import AuditLogMiddleware
 from migration_factory.assessment.engine import AssessmentEngine
 from migration_factory.compliance.engine import ComplianceEngine
 from migration_factory.core.config import get_settings
@@ -115,6 +117,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuditLogMiddleware)
 
 
 @app.get("/")
@@ -298,7 +301,7 @@ def _run_pipeline(source_path: Path, source_filename: str, target: _Target | Non
     )
 
 
-@app.post("/api/v1/analyze")
+@app.post("/api/v1/analyze", dependencies=[Depends(verify_api_key)])
 async def analyze(
     file: UploadFile = File(..., description="Terraform state (.tfstate), JSON, or CSV inventory file"),
     target: _Target | None = Form(None, description='One of: "gcp", "aws", "analyze_only" (omit for analyze_only)'),
@@ -331,7 +334,7 @@ async def analyze(
     }
 
 
-@app.get("/api/v1/report/{run_id}")
+@app.get("/api/v1/report/{run_id}", dependencies=[Depends(verify_api_key)])
 async def get_report(run_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     run = await get_run(session, run_id)
     if run is None:
@@ -340,7 +343,7 @@ async def get_report(run_id: str, session: AsyncSession = Depends(get_session)) 
     return result
 
 
-@app.get("/api/v1/report/{run_id}/html", response_class=HTMLResponse)
+@app.get("/api/v1/report/{run_id}/html", response_class=HTMLResponse, dependencies=[Depends(verify_api_key)])
 async def get_report_html(run_id: str, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     run = await get_run(session, run_id)
     if run is None:
@@ -348,7 +351,7 @@ async def get_report_html(run_id: str, session: AsyncSession = Depends(get_sessi
     return HTMLResponse(content=run.html_report)
 
 
-@app.get("/api/v1/terraform/{run_id}")
+@app.get("/api/v1/terraform/{run_id}", dependencies=[Depends(verify_api_key)])
 async def get_terraform(run_id: str, session: AsyncSession = Depends(get_session)) -> StreamingResponse:
     run = await get_run(session, run_id)
     if run is None:
@@ -368,7 +371,7 @@ async def get_terraform(run_id: str, session: AsyncSession = Depends(get_session
     )
 
 
-@app.get("/api/v1/runs")
+@app.get("/api/v1/runs", dependencies=[Depends(verify_api_key)])
 async def list_all_runs(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     runs = await db_list_runs(session)
     return {
@@ -385,7 +388,7 @@ async def list_all_runs(session: AsyncSession = Depends(get_session)) -> dict[st
     }
 
 
-@app.delete("/api/v1/runs/{run_id}")
+@app.delete("/api/v1/runs/{run_id}", dependencies=[Depends(verify_api_key)])
 async def delete_run_endpoint(run_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, bool]:
     deleted = await db_delete_run(session, run_id)
     if not deleted:
@@ -402,7 +405,7 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
         raise HTTPException(status_code=400, detail=f"{args[0]!r} CLI timed out after 30s") from exc
 
 
-@app.get("/api/v1/discover/aws")
+@app.get("/api/v1/discover/aws", dependencies=[Depends(verify_api_key)])
 def discover_aws(region: str = "us-east-1") -> dict[str, Any]:
     """Live AWS discovery: runs the AWS CLI directly (describe-instances +
     describe-vpcs + describe-security-groups) instead of requiring a
@@ -447,7 +450,7 @@ def discover_aws(region: str = "us-east-1") -> dict[str, Any]:
         tmp_path.unlink(missing_ok=True)
 
 
-@app.get("/api/v1/discover/gcp")
+@app.get("/api/v1/discover/gcp", dependencies=[Depends(verify_api_key)])
 def discover_gcp(project_id: str, region: str = "us-central1") -> dict[str, Any]:
     """Live GCP discovery via `gcloud compute instances list`. See
     discover_aws's docstring for why this is a plain `def`.

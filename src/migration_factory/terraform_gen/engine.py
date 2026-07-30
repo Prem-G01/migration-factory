@@ -231,6 +231,63 @@ class _GcpGenContext:
     region: str = _DEFAULT_GCP_REGION
     subnet_tf_names: dict[str, str] = field(default_factory=dict)
     used_default_subnet: bool = False
+    # tf_name of the migrated NETWORK_VPC resource, if this graph has one --
+    # every generator that references "the" VPC used to hardcode
+    # `google_compute_network.main`, which only worked when that resource's
+    # tf_name genuinely was "main". Falls back to a `default` data source
+    # (used_default_network=True) the same way subnet_tf_names does above.
+    network_tf_name: str | None = None
+    used_default_network: bool = False
+
+    def network_ref(self) -> str:
+        """The `google_compute_network` address to reference for "the"
+        migrated VPC. Marks used_default_network so the caller knows to
+        inject the fallback data source (see generate()).
+        """
+        if self.network_tf_name:
+            return f"google_compute_network.{self.network_tf_name}"
+        self.used_default_network = True
+        return "data.google_compute_network.default"
+
+
+@dataclass(slots=True)
+class _AwsGenContext:
+    """AWS-side mirror of _GcpGenContext. Every AWS generator function
+    receives this, even if most ignore it. Every generator that references
+    "the" VPC/subnet used to hardcode `aws_vpc.main` / `aws_subnet.app`,
+    which only worked when those resources' tf_names genuinely were
+    "main"/"app" -- see vpc_id_expr/subnet_id_expr/subnet_ids_list_expr.
+    """
+
+    vpc_tf_name: str | None = None
+    # Ordered list, not a per-source-resource dict like the GCP side's
+    # subnet_tf_names: nothing in the canonical model captures which GCP
+    # subnetwork a given instance/NAT/etc. actually sat in, so exact
+    # per-resource subnet targeting isn't possible here. subnet_id_expr()
+    # picks the first migrated subnet rather than a guaranteed-dangling
+    # literal; subnet_ids_list_expr() uses all of them for multi-subnet
+    # resources (ALB, EKS).
+    subnet_tf_names: list[str] = field(default_factory=list)
+    used_default_vpc: bool = False
+    used_default_subnet: bool = False
+
+    def vpc_id_expr(self) -> str:
+        if self.vpc_tf_name:
+            return f"aws_vpc.{self.vpc_tf_name}.id"
+        self.used_default_vpc = True
+        return "data.aws_vpc.default.id"
+
+    def subnet_id_expr(self) -> str:
+        if self.subnet_tf_names:
+            return f"aws_subnet.{self.subnet_tf_names[0]}.id"
+        self.used_default_subnet = True
+        return "data.aws_subnets.default.ids[0]"
+
+    def subnet_ids_list_expr(self) -> str:
+        if self.subnet_tf_names:
+            return "[" + ", ".join(f"aws_subnet.{n}.id" for n in self.subnet_tf_names) + "]"
+        self.used_default_subnet = True
+        return "data.aws_subnets.default.ids"
 
 
 class GeneratedFile(BaseModel):
@@ -253,6 +310,20 @@ class TerraformGenerationReport(BaseModel):
 
 def _sanitize_name(name: str) -> str:
     """Convert a resource name to a valid Terraform identifier."""
+    # GCP resource names/ids are frequently full paths, e.g.
+    # "projects/my-project/global/networks/main-network" -- keeping the
+    # whole thing (with "/" silently dropped by the alnum filter below)
+    # produced unreadable slugs like
+    # "projectsmy_projectglobalnetworksmain_network". The last path
+    # segment is the actual human-meaningful name in every case GCP uses
+    # this convention for.
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    # GCP service account emails (app-service-account@project.iam.gserviceaccount
+    # .com) hit the same problem one level down -- the account id before "@" is
+    # the meaningful part, the domain is boilerplate.
+    if "@" in name:
+        name = name.split("@", 1)[0]
     sanitized = name.replace("-", "_").replace(".", "_").replace(":", "_")
     sanitized = "".join(c for c in sanitized if c.isalnum() or c == "_")
     if sanitized and sanitized[0].isdigit():
@@ -289,7 +360,7 @@ def _gen_gcp_subnet(resource: CanonicalResource, tf_name: str, ctx: _GcpGenConte
   name          = var.{tf_name}_name
   ip_cidr_range = "{cidr}"
   region        = "{region}"
-  network       = google_compute_network.{_sanitize_name(resource.name)}.id
+  network       = {ctx.network_ref()}.id
   description   = "Migrated from {resource.source_type}: {resource.name}"
 
   private_ip_google_access = true
@@ -351,7 +422,7 @@ def _gen_gcp_firewall(resource: CanonicalResource, tf_name: str, ctx: _GcpGenCon
 
     return f'''resource "google_compute_firewall" "{tf_name}" {{
   name    = var.{tf_name}_name
-  network = google_compute_network.main.name
+  network = {ctx.network_ref()}.name
 
 {allow_hcl}
 
@@ -462,7 +533,7 @@ def _gen_gcp_cloudsql(resource: CanonicalResource, tf_name: str, ctx: _GcpGenCon
 
     ip_configuration {{
       ipv4_enabled    = false
-      private_network = google_compute_network.main.id
+      private_network = {ctx.network_ref()}.id
     }}
 
     backup_configuration {{
@@ -724,7 +795,7 @@ def _gen_gcp_nat(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext)
     return f'''resource "google_compute_router" "{tf_name}_router" {{
   name    = "${{var.{tf_name}_name}}-router"
   region  = var.region
-  network = google_compute_network.main.id
+  network = {ctx.network_ref()}.id
 }}
 
 resource "google_compute_router_nat" "{tf_name}" {{
@@ -752,7 +823,7 @@ def _gen_gcp_gke(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext)
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  network    = google_compute_network.main.name
+  network    = {ctx.network_ref()}.name
   subnetwork = data.google_compute_subnetwork.default.name
 
   workload_identity_config {{
@@ -826,7 +897,7 @@ def _gen_gcp_vpn(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext)
     peer_ip = attrs.get("peer_ip") or attrs.get("remote_ip_address") or "0.0.0.0"
     return f'''resource "google_compute_vpn_gateway" "{tf_name}" {{
   name    = var.{tf_name}_name
-  network = google_compute_network.main.id
+  network = {ctx.network_ref()}.id
   region  = "{resource.region or ctx.region}"
 }}
 
@@ -843,7 +914,7 @@ resource "google_compute_vpn_tunnel" "{tf_name}" {{
 def _gen_gcp_peering(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContext) -> str:
     return f'''resource "google_compute_network_peering" "{tf_name}" {{
   name         = var.{tf_name}_name
-  network      = google_compute_network.main.self_link
+  network      = {ctx.network_ref()}.self_link
   peer_network = var.{tf_name}_peer_network
 }}
 '''
@@ -855,7 +926,7 @@ def _gen_gcp_route(resource: CanonicalResource, tf_name: str, ctx: _GcpGenContex
     return f'''resource "google_compute_route" "{tf_name}" {{
   name             = var.{tf_name}_name
   dest_range       = "{dest}"
-  network          = google_compute_network.main.name
+  network          = {ctx.network_ref()}.name
   next_hop_gateway = "default-internet-gateway"
   priority         = 1000
 }}
@@ -918,7 +989,7 @@ def _gen_gcp_filestore(resource: CanonicalResource, tf_name: str, ctx: _GcpGenCo
   }}
 
   networks {{
-    network = google_compute_network.main.name
+    network = {ctx.network_ref()}.name
     modes   = ["MODE_IPV4"]
   }}
 }}
@@ -1060,7 +1131,7 @@ def _map_machine_type(gcp_machine_type: str) -> str:
     return _GCP_TO_AWS_MACHINE_TYPES.get(gcp_machine_type, "t3.medium")
 
 
-def _gen_aws_vpc(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_vpc(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_vpc" "{tf_name}" {{
   cidr_block           = var.{tf_name}_cidr_block
   enable_dns_hostnames = true
@@ -1074,9 +1145,9 @@ def _gen_aws_vpc(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_aws_subnet(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_subnet(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_subnet" "{tf_name}" {{
-  vpc_id            = aws_vpc.main.id
+  vpc_id            = {ctx.vpc_id_expr()}
   cidr_block        = var.{tf_name}_cidr_block
   availability_zone = var.{tf_name}_availability_zone
 
@@ -1088,7 +1159,7 @@ def _gen_aws_subnet(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_aws_security_group(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_security_group(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     attrs = resource.native_attributes
 
     # Translate GCP firewall allow[] blocks -> AWS security-group ingress rules
@@ -1126,7 +1197,7 @@ def _gen_aws_security_group(resource: CanonicalResource, tf_name: str) -> str:
     return f'''resource "aws_security_group" "{tf_name}" {{
   name        = var.{tf_name}_name
   description = "Migrated from GCP firewall: {resource.name}"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = {ctx.vpc_id_expr()}
 
 {ingress_hcl}
 
@@ -1145,7 +1216,7 @@ def _gen_aws_security_group(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_aws_instance(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_instance(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     attrs = resource.native_attributes
     machine_type = str(attrs.get("machine_type", "e2-medium"))
     instance_type = _map_machine_type(machine_type)
@@ -1160,7 +1231,7 @@ def _gen_aws_instance(resource: CanonicalResource, tf_name: str) -> str:
     return f'''resource "aws_instance" "{tf_name}" {{
   ami           = var.{tf_name}_ami
   instance_type = "{instance_type}"
-  subnet_id     = aws_subnet.app.id
+  subnet_id     = {ctx.subnet_id_expr()}
 
   root_block_device {{
     volume_type           = "gp3"
@@ -1177,7 +1248,7 @@ def _gen_aws_instance(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_aws_s3_bucket(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_s3_bucket(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_s3_bucket" "{tf_name}" {{
   bucket = var.{tf_name}_name
   tags = {{
@@ -1213,7 +1284,7 @@ resource "aws_s3_bucket_public_access_block" "{tf_name}_pab" {{
 '''
 
 
-def _gen_aws_iam_role(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_iam_role(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_iam_role" "{tf_name}" {{
   name = var.{tf_name}_name
 
@@ -1242,7 +1313,7 @@ resource "aws_iam_instance_profile" "{tf_name}_profile" {{
 '''
 
 
-def _gen_aws_db_instance(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_db_instance(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     attrs = resource.native_attributes
     raw_version = str(attrs.get("database_version", "POSTGRES_14"))
     if "POSTGRES" in raw_version.upper():
@@ -1293,7 +1364,7 @@ _GCP_TO_AWS_LAMBDA_RUNTIMES: dict[str, str] = {
 }
 
 
-def _gen_aws_lambda_function(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_lambda_function(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     attrs = resource.native_attributes
     raw_runtime = str(attrs.get("runtime", "python311"))
     normalized = raw_runtime.lower().replace(".", "").replace("-", "")
@@ -1322,7 +1393,7 @@ def _gen_aws_lambda_function(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_aws_elasticache(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_elasticache(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_elasticache_replication_group" "{tf_name}" {{
   replication_group_id = var.{tf_name}_name
   description           = "Migrated from GCP Memorystore: {resource.name}"
@@ -1343,12 +1414,12 @@ def _gen_aws_elasticache(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_aws_lb(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_lb(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_lb" "{tf_name}" {{
   name               = var.{tf_name}_name
   internal           = false
   load_balancer_type = "application"
-  subnets            = [aws_subnet.app.id]
+  subnets            = {ctx.subnet_ids_list_expr()}
 
   tags = {{
     Name     = var.{tf_name}_name
@@ -1361,7 +1432,7 @@ resource "aws_lb_target_group" "{tf_name}_tg" {{
   name     = "${{var.{tf_name}_name}}-tg"
   port     = 80
   protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
+  vpc_id   = {ctx.vpc_id_expr()}
 
   health_check {{
     path = "/health"
@@ -1370,7 +1441,7 @@ resource "aws_lb_target_group" "{tf_name}_tg" {{
 '''
 
 
-def _gen_aws_sns_topic(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_sns_topic(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_sns_topic" "{tf_name}" {{
   name = var.{tf_name}_name
 
@@ -1383,7 +1454,7 @@ def _gen_aws_sns_topic(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_aws_sqs_queue(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_sqs_queue(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     attrs = resource.native_attributes
     visibility = int(attrs.get("ack_deadline_seconds") or 30)
     return f'''resource "aws_sqs_queue" "{tf_name}" {{
@@ -1400,7 +1471,7 @@ def _gen_aws_sqs_queue(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_aws_secretsmanager_secret(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_secretsmanager_secret(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_secretsmanager_secret" "{tf_name}" {{
   name = var.{tf_name}_name
 
@@ -1417,7 +1488,7 @@ def _gen_aws_secretsmanager_secret(resource: CanonicalResource, tf_name: str) ->
 '''
 
 
-def _gen_aws_nat_gateway(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_nat_gateway(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_eip" "{tf_name}_eip" {{
   domain = "vpc"
 
@@ -1429,7 +1500,7 @@ def _gen_aws_nat_gateway(resource: CanonicalResource, tf_name: str) -> str:
 
 resource "aws_nat_gateway" "{tf_name}" {{
   allocation_id = aws_eip.{tf_name}_eip.id
-  subnet_id     = aws_subnet.app.id
+  subnet_id     = {ctx.subnet_id_expr()}
 
   tags = {{
     Name     = var.{tf_name}_name
@@ -1440,7 +1511,7 @@ resource "aws_nat_gateway" "{tf_name}" {{
 '''
 
 
-def _gen_aws_route53_zone(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_route53_zone(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     attrs = resource.native_attributes
     domain = str(attrs.get("dns_name") or attrs.get("name") or resource.name or "example.com")
     return f'''resource "aws_route53_zone" "{tf_name}" {{
@@ -1458,7 +1529,7 @@ def _gen_aws_route53_zone(resource: CanonicalResource, tf_name: str) -> str:
 '''
 
 
-def _gen_aws_cloudfront_distribution(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_cloudfront_distribution(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_cloudfront_distribution" "{tf_name}" {{
   enabled             = true
   default_root_object = "index.html"
@@ -1501,7 +1572,7 @@ def _gen_aws_cloudfront_distribution(resource: CanonicalResource, tf_name: str) 
 '''
 
 
-def _gen_aws_eks(resource: CanonicalResource, tf_name: str) -> str:
+def _gen_aws_eks(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
     return f'''resource "aws_iam_role" "{tf_name}_cluster_role" {{
   name = "${{var.{tf_name}_name}}-cluster-role"
 
@@ -1525,7 +1596,7 @@ resource "aws_eks_cluster" "{tf_name}" {{
   role_arn = aws_iam_role.{tf_name}_cluster_role.arn
 
   vpc_config {{
-    subnet_ids = [aws_subnet.app.id]
+    subnet_ids = {ctx.subnet_ids_list_expr()}
   }}
 
   tags = {{ Name = var.{tf_name}_name, Migrated = "true", Source = "gcp-gke" }}
@@ -1553,7 +1624,7 @@ resource "aws_eks_node_group" "{tf_name}_nodes" {{
   cluster_name    = aws_eks_cluster.{tf_name}.name
   node_group_name = "${{var.{tf_name}_name}}-nodes"
   node_role_arn   = aws_iam_role.{tf_name}_node_role.arn
-  subnet_ids      = [aws_subnet.app.id]
+  subnet_ids      = {ctx.subnet_ids_list_expr()}
 
   scaling_config {{
     desired_size = 2
@@ -1652,7 +1723,47 @@ class TerraformGenerator:
                 and (tr := translation_index.get(r.id)) is not None
                 and tr.status is not SupportStatus.UNSUPPORTED
             }
-            gcp_ctx = _GcpGenContext(region=self.region, subnet_tf_names=subnet_tf_names)
+            # Same idea for "the" VPC -- every generator that references it
+            # used to hardcode google_compute_network.main, which silently
+            # broke `terraform validate` whenever the real VPC resource's
+            # tf_name wasn't literally "main" (see _GcpGenContext.network_ref).
+            # This model only tracks one VPC per migration, matching every
+            # generator's existing single-VPC assumption; first match wins.
+            network_tf_name = next(
+                (
+                    _tf_name(r)
+                    for r in graph.resources.values()
+                    if r.canonical_type is CanonicalResourceType.NETWORK_VPC
+                    and (tr := translation_index.get(r.id)) is not None
+                    and tr.status is not SupportStatus.UNSUPPORTED
+                ),
+                None,
+            )
+            gcp_ctx = _GcpGenContext(
+                region=self.region, subnet_tf_names=subnet_tf_names, network_tf_name=network_tf_name
+            )
+
+        aws_ctx: _AwsGenContext | None = None
+        if self.target_provider is CloudProvider.AWS:
+            # Mirrors the GCP pre-scan above -- see _AwsGenContext.
+            vpc_tf_name = next(
+                (
+                    _tf_name(r)
+                    for r in graph.resources.values()
+                    if r.canonical_type is CanonicalResourceType.NETWORK_VPC
+                    and (tr := translation_index.get(r.id)) is not None
+                    and tr.status is not SupportStatus.UNSUPPORTED
+                ),
+                None,
+            )
+            subnet_tf_name_list = [
+                _tf_name(r)
+                for r in graph.resources.values()
+                if r.canonical_type is CanonicalResourceType.NETWORK_SUBNET
+                and (tr := translation_index.get(r.id)) is not None
+                and tr.status is not SupportStatus.UNSUPPORTED
+            ]
+            aws_ctx = _AwsGenContext(vpc_tf_name=vpc_tf_name, subnet_tf_names=subnet_tf_name_list)
 
         for resource_id in ordered_ids:
             resource = graph.resources[resource_id]
@@ -1682,7 +1793,12 @@ class TerraformGenerator:
                 continue
 
             name = _tf_name(resource)
-            block = gen_fn(resource, name, gcp_ctx) if gcp_ctx is not None else gen_fn(resource, name)
+            if gcp_ctx is not None:
+                block = gen_fn(resource, name, gcp_ctx)
+            elif aws_ctx is not None:
+                block = gen_fn(resource, name, aws_ctx)
+            else:
+                block = gen_fn(resource, name)
             main_blocks.append(block)
 
             # Generate variables for this resource
@@ -1880,6 +1996,36 @@ variable "{name}_password" {{
                 '''data "google_compute_subnetwork" "default" {
   name   = "default"
   region = var.region
+}
+''',
+            )
+
+        if gcp_ctx is not None and gcp_ctx.used_default_network:
+            main_blocks.insert(
+                0,
+                '''data "google_compute_network" "default" {
+  name = "default"
+}
+''',
+            )
+
+        if aws_ctx is not None and aws_ctx.used_default_subnet:
+            main_blocks.insert(
+                0,
+                f'''data "aws_subnets" "default" {{
+  filter {{
+    name   = "vpc-id"
+    values = [{aws_ctx.vpc_id_expr()}]
+  }}
+}}
+''',
+            )
+
+        if aws_ctx is not None and aws_ctx.used_default_vpc:
+            main_blocks.insert(
+                0,
+                '''data "aws_vpc" "default" {
+  default = true
 }
 ''',
             )

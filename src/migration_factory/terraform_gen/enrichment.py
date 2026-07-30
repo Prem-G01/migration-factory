@@ -44,7 +44,8 @@ class AWSEnrichmentEngine:
                 timeout=30,
             )
             if r.returncode == 0:
-                return json.loads(r.stdout)
+                parsed: dict[str, Any] = json.loads(r.stdout)
+                return parsed
             return None
         except Exception:
             return None
@@ -68,7 +69,8 @@ class AWSEnrichmentEngine:
         data = self._aws("ec2", "describe-security-groups", "--group-ids", sg_id)
         if not data or not data.get("SecurityGroups"):
             return {}
-        return data["SecurityGroups"][0]
+        result: dict[str, Any] = data["SecurityGroups"][0]
+        return result
 
     def get_iam_role_policies(self, role_name: str) -> list[str]:
         """Returns list of managed policy ARNs attached to a role."""
@@ -91,7 +93,8 @@ class AWSEnrichmentEngine:
         data = self._aws("rds", "describe-db-instances", "--db-instance-identifier", db_id)
         if not data or not data.get("DBInstances"):
             return ""
-        return data["DBInstances"][0].get("Endpoint", {}).get("Address", "")
+        address: str = data["DBInstances"][0].get("Endpoint", {}).get("Address", "")
+        return address
 
     def is_available(self) -> bool:
         return self._available
