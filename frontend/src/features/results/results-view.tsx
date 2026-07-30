@@ -13,6 +13,7 @@ import { WaveTimeline } from "@/components/data/timeline";
 import { ComplianceTab } from "@/features/results/compliance-tab";
 import { SecurityTab } from "@/features/results/security-tab";
 import { AITab } from "@/features/results/ai-tab";
+import { MappingTab } from "@/features/results/mapping-tab";
 import { useDownloadTerraform, useReport } from "@/hooks/use-migration-queries";
 import { getHtmlReport } from "@/services/migration-api";
 import { COLORS, RISK_COLORS, STRATEGY_COLORS, directionColor, scoreColor } from "@/constants/theme";
@@ -178,6 +179,7 @@ export function ResultsView({ runId, onNewAnalysis }: ResultsViewProps) {
         <TabsList>
           <TabsTrigger value="waves">Waves</TabsTrigger>
           <TabsTrigger value="resources">Resources</TabsTrigger>
+          <TabsTrigger value="mapping">Mapping</TabsTrigger>
           <TabsTrigger value="compliance">Compliance</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="blockers">
@@ -209,6 +211,10 @@ export function ResultsView({ runId, onNewAnalysis }: ResultsViewProps) {
             getRowKey={(r) => r.resource_id}
             getRowAccent={(r) => STRATEGY_COLORS[r.strategy]}
           />
+        </TabsContent>
+
+        <TabsContent value="mapping">
+          <MappingTab resources={resources} isAnalyzeOnly={isAnalyzeOnly} />
         </TabsContent>
 
         <TabsContent value="compliance">
