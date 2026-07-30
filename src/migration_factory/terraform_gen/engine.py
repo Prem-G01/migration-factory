@@ -1635,6 +1635,304 @@ resource "aws_eks_node_group" "{tf_name}_nodes" {{
 '''
 
 
+def _gen_aws_ebs_volume(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    attrs = resource.native_attributes
+    size = int(attrs.get("size") or attrs.get("size_gb") or 20)
+    gcp_disk_type_map = {"pd-ssd": "gp3", "pd-balanced": "gp3", "pd-standard": "sc1", "pd-extreme": "io2"}
+    volume_type = gcp_disk_type_map.get(str(attrs.get("type") or "pd-balanced"), "gp3")
+    return f'''resource "aws_ebs_volume" "{tf_name}" {{
+  availability_zone = var.{tf_name}_availability_zone
+  size              = {size}
+  type              = "{volume_type}"
+  encrypted         = true
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-persistent-disk:{resource.name}"
+  }}
+}}
+'''
+
+
+def _gen_aws_dynamodb_table(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    return f'''# NOTE: Firestore -> DynamoDB requires data model redesign.
+# Firestore uses document collections; DynamoDB uses partition+sort keys.
+# Manual migration required for existing data and application queries.
+resource "aws_dynamodb_table" "{tf_name}" {{
+  name         = var.{tf_name}_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = var.{tf_name}_hash_key
+
+  attribute {{
+    name = var.{tf_name}_hash_key
+    type = "S"
+  }}
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-firestore:{resource.name}"
+  }}
+}}
+'''
+
+
+def _gen_aws_route_table(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    attrs = resource.native_attributes
+    dest = attrs.get("dest_range") or attrs.get("destination_cidr_block") or "0.0.0.0/0"
+    # GCP's "default-internet-gateway" next-hop has no single pre-existing
+    # AWS resource address it safely maps to (and auto-creating an internet
+    # gateway per route table would collide -- a VPC can only have one).
+    # Left as a variable the user points at whatever gateway is correct.
+    return f'''resource "aws_route_table" "{tf_name}" {{
+  vpc_id = {ctx.vpc_id_expr()}
+
+  route {{
+    cidr_block = "{dest}"
+    gateway_id = var.{tf_name}_gateway_id
+  }}
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-route:{resource.name}"
+  }}
+}}
+'''
+
+
+def _gen_aws_ecs_service(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    return f'''resource "aws_ecs_cluster" "{tf_name}_cluster" {{
+  name = "${{var.{tf_name}_name}}-cluster"
+}}
+
+resource "aws_iam_role" "{tf_name}_execution_role" {{
+  name = "${{var.{tf_name}_name}}-execution-role"
+
+  assume_role_policy = jsonencode({{
+    Version = "2012-10-17"
+    Statement = [{{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = {{ Service = "ecs-tasks.amazonaws.com" }}
+    }}]
+  }})
+}}
+
+resource "aws_iam_role_policy_attachment" "{tf_name}_execution_policy" {{
+  role       = aws_iam_role.{tf_name}_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}}
+
+resource "aws_ecs_task_definition" "{tf_name}" {{
+  family                   = var.{tf_name}_name
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.{tf_name}_execution_role.arn
+
+  container_definitions = jsonencode([{{
+    name         = var.{tf_name}_name
+    image        = var.{tf_name}_image
+    portMappings = [{{ containerPort = 8080, protocol = "tcp" }}]
+  }}])
+}}
+
+resource "aws_ecs_service" "{tf_name}" {{
+  name            = var.{tf_name}_name
+  cluster         = aws_ecs_cluster.{tf_name}_cluster.id
+  task_definition = aws_ecs_task_definition.{tf_name}.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {{
+    subnets          = {ctx.subnet_ids_list_expr()}
+    assign_public_ip = true
+  }}
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-cloud-run:{resource.name}"
+  }}
+}}
+'''
+
+
+def _gen_aws_efs(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    return f'''resource "aws_efs_file_system" "{tf_name}" {{
+  creation_token = var.{tf_name}_name
+  encrypted      = true
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-filestore:{resource.name}"
+  }}
+}}
+
+resource "aws_efs_mount_target" "{tf_name}_mount" {{
+  file_system_id = aws_efs_file_system.{tf_name}.id
+  subnet_id      = {ctx.subnet_id_expr()}
+}}
+'''
+
+
+def _gen_aws_route53_record(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    attrs = resource.native_attributes
+    rtype = str(attrs.get("type") or "A")
+    ttl = int(attrs.get("ttl") or 300)
+    return f'''resource "aws_route53_record" "{tf_name}" {{
+  zone_id = var.{tf_name}_zone_id
+  name    = var.{tf_name}_name
+  type    = "{rtype}"
+  ttl     = {ttl}
+  records = [var.{tf_name}_value]
+}}
+'''
+
+
+def _gen_aws_vpn_connection(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    attrs = resource.native_attributes
+    peer_ip = attrs.get("peer_ip") or attrs.get("peer_address") or "0.0.0.0"
+    return f'''resource "aws_customer_gateway" "{tf_name}_cgw" {{
+  bgp_asn    = 65000
+  ip_address = "{peer_ip}"
+  type       = "ipsec.1"
+
+  tags = {{ Name = "${{var.{tf_name}_name}}-cgw" }}
+}}
+
+resource "aws_vpn_gateway" "{tf_name}_vgw" {{
+  vpc_id = {ctx.vpc_id_expr()}
+
+  tags = {{ Name = "${{var.{tf_name}_name}}-vgw" }}
+}}
+
+resource "aws_vpn_connection" "{tf_name}" {{
+  customer_gateway_id = aws_customer_gateway.{tf_name}_cgw.id
+  vpn_gateway_id      = aws_vpn_gateway.{tf_name}_vgw.id
+  type                = "ipsec.1"
+  static_routes_only  = true
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-vpn-tunnel:{resource.name}"
+  }}
+}}
+'''
+
+
+def _gen_aws_vpc_peering(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    return f'''resource "aws_vpc_peering_connection" "{tf_name}" {{
+  vpc_id      = {ctx.vpc_id_expr()}
+  peer_vpc_id = var.{tf_name}_peer_vpc_id
+  auto_accept = false
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-network-peering:{resource.name}"
+  }}
+}}
+'''
+
+
+def _gen_aws_cloudwatch_alarm(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    return f'''resource "aws_cloudwatch_metric_alarm" "{tf_name}" {{
+  alarm_name          = var.{tf_name}_name
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods   = 1
+  metric_name          = "CPUUtilization"
+  namespace            = "AWS/EC2"
+  period               = 60
+  statistic            = "Average"
+  threshold            = 90
+  alarm_description    = "Migrated from GCP alert policy: {resource.name}"
+  # NOTE: Map GCP Monitoring metrics/filters to CloudWatch namespaces/metrics manually.
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+  }}
+}}
+'''
+
+
+_AWS_CLOUDWATCH_LOG_RETENTIONS = [
+    1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653,
+]
+
+
+def _gen_aws_cloudwatch_log_group(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    attrs = resource.native_attributes
+    retention = int(attrs.get("retention_days") or 30)
+    # CloudWatch only accepts a fixed set of retention values -- snap to the
+    # closest one instead of passing an arbitrary number through and
+    # failing terraform apply.
+    closest = min(_AWS_CLOUDWATCH_LOG_RETENTIONS, key=lambda x: abs(x - retention))
+    return f'''resource "aws_cloudwatch_log_group" "{tf_name}" {{
+  name              = var.{tf_name}_name
+  retention_in_days = {closest}
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-logging-bucket:{resource.name}"
+  }}
+}}
+'''
+
+
+def _gen_aws_iam_policy(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    return f'''resource "aws_iam_policy" "{tf_name}" {{
+  name        = var.{tf_name}_name
+  description = "Migrated from {resource.source_type}: {resource.name} -- review permissions before attaching"
+
+  policy = jsonencode({{
+    Version = "2012-10-17"
+    Statement = [{{
+      Effect   = "Allow"
+      Action   = ["resourcemanager:GetProject"]
+      Resource = "*"
+    }}]
+  }})
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+  }}
+}}
+'''
+
+
+def _gen_aws_acm_certificate(resource: CanonicalResource, tf_name: str, ctx: _AwsGenContext) -> str:
+    attrs = resource.native_attributes
+    domains = attrs.get("domains")
+    domain = str(domains[0]) if isinstance(domains, list) and domains else str(attrs.get("domain_name") or "example.com")
+    return f'''resource "aws_acm_certificate" "{tf_name}" {{
+  domain_name       = "{domain}"
+  validation_method = "DNS"
+
+  lifecycle {{
+    create_before_destroy = true
+  }}
+
+  tags = {{
+    Name     = var.{tf_name}_name
+    Migrated = "true"
+    Source   = "gcp-certificate-manager:{resource.name}"
+  }}
+}}
+
+# IMPORTANT: DNS validation requires adding the validation CNAME record(s)
+# ACM generates -- see aws_acm_certificate.{tf_name}.domain_validation_options
+'''
+
+
 _AWS_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.NETWORK_VPC: _gen_aws_vpc,
     CanonicalResourceType.NETWORK_SUBNET: _gen_aws_subnet,
@@ -1653,6 +1951,18 @@ _AWS_GENERATORS: dict[CanonicalResourceType, Any] = {
     CanonicalResourceType.DNS_ZONE: _gen_aws_route53_zone,
     CanonicalResourceType.CDN_DISTRIBUTION: _gen_aws_cloudfront_distribution,
     CanonicalResourceType.COMPUTE_CONTAINER_CLUSTER: _gen_aws_eks,
+    CanonicalResourceType.STORAGE_BLOCK_VOLUME: _gen_aws_ebs_volume,
+    CanonicalResourceType.DATABASE_NOSQL: _gen_aws_dynamodb_table,
+    CanonicalResourceType.NETWORK_ROUTE_TABLE: _gen_aws_route_table,
+    CanonicalResourceType.COMPUTE_CONTAINER_SERVICE: _gen_aws_ecs_service,
+    CanonicalResourceType.STORAGE_FILE_SYSTEM: _gen_aws_efs,
+    CanonicalResourceType.DNS_RECORD: _gen_aws_route53_record,
+    CanonicalResourceType.NETWORK_VPN: _gen_aws_vpn_connection,
+    CanonicalResourceType.NETWORK_PEERING: _gen_aws_vpc_peering,
+    CanonicalResourceType.MONITORING_ALARM: _gen_aws_cloudwatch_alarm,
+    CanonicalResourceType.LOG_GROUP: _gen_aws_cloudwatch_log_group,
+    CanonicalResourceType.IAM_POLICY: _gen_aws_iam_policy,
+    CanonicalResourceType.CERTIFICATE: _gen_aws_acm_certificate,
 }
 
 
@@ -1987,6 +2297,76 @@ variable "{name}_password" {{
                         f'# {name}_password = "CHANGE_ME"  '
                         f'# sensitive - set via env var TF_VAR_{name}_password'
                     )
+
+                if resource.canonical_type is CanonicalResourceType.STORAGE_BLOCK_VOLUME:
+                    variable_blocks.append(f'''variable "{name}_availability_zone" {{
+  description = "AWS availability zone for the migrated EBS volume (GCP zones have no AWS AZ equivalent)"
+  type        = string
+  default     = "us-east-1a"
+}}
+''')
+                    tfvars_lines.append(
+                        f'# {name}_availability_zone = "YOUR_AZ"  '
+                        f'# Set before apply — no AWS AZ equivalent in GCP source data'
+                    )
+
+                if resource.canonical_type is CanonicalResourceType.DATABASE_NOSQL:
+                    variable_blocks.append(f'''variable "{name}_hash_key" {{
+  description = "DynamoDB partition key (source: Firestore database {resource.name} has no equivalent key schema)"
+  type        = string
+  default     = "id"
+}}
+''')
+                    tfvars_lines.append(
+                        f'# {name}_hash_key = "YOUR_PARTITION_KEY"  '
+                        f'# Set before apply — Firestore has no partition-key equivalent, review your data model'
+                    )
+
+                if resource.canonical_type is CanonicalResourceType.NETWORK_ROUTE_TABLE:
+                    variable_blocks.append(f'''variable "{name}_gateway_id" {{
+  description = "Target gateway ID for the migrated route (source: {resource.name})"
+  type        = string
+  default     = ""
+}}
+''')
+                    tfvars_lines.append(
+                        f'# {name}_gateway_id = "YOUR_GATEWAY_ID"  '
+                        f'# Set before apply — e.g. an aws_internet_gateway or aws_nat_gateway id'
+                    )
+
+                if resource.canonical_type is CanonicalResourceType.COMPUTE_CONTAINER_SERVICE:
+                    variable_blocks.append(f'''variable "{name}_image" {{
+  description = "Container image for the migrated ECS service (source: Cloud Run service {resource.name})"
+  type        = string
+  default     = "public.ecr.aws/docker/library/hello-world:latest"
+}}
+''')
+                    tfvars_lines.append(f'# {name}_image = "YOUR_IMAGE"  # Set before apply — default is a placeholder')
+
+                if resource.canonical_type is CanonicalResourceType.NETWORK_PEERING:
+                    variable_blocks.append(f'''variable "{name}_peer_vpc_id" {{
+  description = "Peer VPC ID (source: GCP network peering {resource.name})"
+  type        = string
+  default     = ""
+}}
+''')
+                    tfvars_lines.append(f'# {name}_peer_vpc_id = "YOUR_PEER_VPC_ID"  # Set before apply')
+
+                if resource.canonical_type is CanonicalResourceType.DNS_RECORD:
+                    variable_blocks.append(f'''variable "{name}_zone_id" {{
+  description = "Route53 hosted zone ID this record belongs to (source: {resource.name})"
+  type        = string
+  default     = ""
+}}
+
+variable "{name}_value" {{
+  description = "Record data (source rrdatas value: {resource.name})"
+  type        = string
+  default     = ""
+}}
+''')
+                    tfvars_lines.append(f'# {name}_zone_id = "YOUR_HOSTED_ZONE_ID"  # Set before apply')
+                    tfvars_lines.append(f'# {name}_value = "YOUR_RECORD_VALUE"  # Set before apply')
 
             generated_count += 1
 
