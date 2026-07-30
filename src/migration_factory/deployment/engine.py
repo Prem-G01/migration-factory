@@ -8,6 +8,7 @@ available; falls back to simulation mode for environments without it.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -103,7 +104,19 @@ class TerraformOrchestrator:
     def is_available(self) -> bool:
         return self._terraform_path is not None
 
-    def run_command(self, command: TerraformCommand, *args: str, auto_approve: bool = False) -> CommandResult:
+    def run_command(
+        self,
+        command: TerraformCommand,
+        *args: str,
+        auto_approve: bool = False,
+        env: dict[str, str] | None = None,
+    ) -> CommandResult:
+        """`env`, when given, is merged on top of this process's own
+        environment for the subprocess call only -- e.g. short-lived
+        AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN from an
+        assumed role (see cloud_access/aws.py), scoped to this one
+        terraform invocation rather than the whole process.
+        """
         if self.simulation:
             return self._simulate_command(command, args)
 
@@ -113,9 +126,11 @@ class TerraformOrchestrator:
         if command is TerraformCommand.DESTROY and auto_approve:
             cmd.append("-auto-approve")
 
+        subprocess_env = {**os.environ, **env} if env else None
+
         try:
             result = subprocess.run(
-                cmd, cwd=str(self.working_dir), capture_output=True, text=True, timeout=600,
+                cmd, cwd=str(self.working_dir), capture_output=True, text=True, timeout=600, env=subprocess_env,
             )
             return CommandResult(
                 command=" ".join(cmd), exit_code=result.returncode,

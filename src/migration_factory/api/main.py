@@ -28,12 +28,21 @@ from typing import Any, Literal
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from migration_factory.ai.engine import AIEngine
 from migration_factory.api.auth import verify_api_key
-from migration_factory.api.database import MigrationRun, get_run, get_session, save_run
+from migration_factory.api.database import (
+    CloudConnection,
+    MigrationRun,
+    get_cloud_connection,
+    get_run,
+    get_session,
+    save_cloud_connection,
+    save_run,
+)
 from migration_factory.api.database import delete_run as db_delete_run
 from migration_factory.api.database import list_runs as db_list_runs
 from migration_factory.api.middleware import AuditLogMiddleware
@@ -46,6 +55,12 @@ from migration_factory.api.rate_limit import (
     setup_rate_limiting,
 )
 from migration_factory.assessment.engine import AssessmentEngine
+from migration_factory.cloud_access.aws import (
+    generate_external_id,
+    generate_setup_instructions,
+    platform_identity_arn,
+    verify_role_access,
+)
 from migration_factory.compliance.engine import ComplianceEngine
 from migration_factory.core.config import get_settings
 from migration_factory.core.exceptions import MigrationFactoryError, ParserError
@@ -532,4 +547,115 @@ async def health(session: AsyncSession = Depends(get_session)) -> dict[str, Any]
         "parsers": 10,
         "tests_passing": 387,
         "database": db_status,
+    }
+
+
+class _SetRoleArnRequest(BaseModel):
+    role_arn: str
+
+
+@app.post("/api/v1/cloud-connections/aws", dependencies=[Depends(verify_api_key)])
+@limiter.limit(WRITE_LIMIT)
+async def create_aws_connection(request: Request, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """Starts a new AWS cross-account connection: generates a fresh
+    external_id and (if this server's own platform identity is
+    configured) the exact IAM setup instructions to run in the target
+    AWS account. Collects no credentials -- only a role_arn, once the
+    user has created that role and comes back with it.
+    """
+    connection_id = str(uuid.uuid4())
+    external_id = generate_external_id()
+    connection = CloudConnection(
+        id=connection_id,
+        provider="aws",
+        role_arn="",
+        external_id=external_id,
+        status="pending",
+        created_at=datetime.now(UTC),
+    )
+    await save_cloud_connection(session, connection)
+
+    platform_arn = platform_identity_arn()
+    if platform_arn is None:
+        return {
+            "connection_id": connection_id,
+            "external_id": external_id,
+            "status": "pending",
+            "error": (
+                "This server's own AWS identity isn't configured yet "
+                "(MF_AWS_PLATFORM_ACCESS_KEY_ID / MF_AWS_PLATFORM_SECRET_ACCESS_KEY) "
+                "-- setup instructions can't be generated until it is."
+            ),
+        }
+
+    role_name = f"migration-factory-{connection_id[:8]}"
+    return {
+        "connection_id": connection_id,
+        "external_id": external_id,
+        "platform_identity_arn": platform_arn,
+        "status": "pending",
+        "setup_instructions": generate_setup_instructions(role_name, platform_arn, external_id),
+    }
+
+
+@app.post("/api/v1/cloud-connections/aws/{connection_id}/role-arn", dependencies=[Depends(verify_api_key)])
+@limiter.limit(WRITE_LIMIT)
+async def set_aws_connection_role_arn(
+    request: Request,
+    connection_id: str,
+    body: _SetRoleArnRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Records the role ARN once the user has created the trust role from
+    the instructions returned by create_aws_connection. Doesn't verify it
+    -- call the /verify endpoint next.
+    """
+    connection = await get_cloud_connection(session, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection_id: {connection_id!r}")
+    connection.role_arn = body.role_arn
+    await session.commit()
+    return {"connection_id": connection_id, "role_arn": body.role_arn, "status": connection.status}
+
+
+@app.get("/api/v1/cloud-connections/aws/{connection_id}/verify", dependencies=[Depends(verify_api_key)])
+@limiter.limit(WRITE_LIMIT)
+async def verify_aws_connection(
+    request: Request, connection_id: str, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """Actually attempts the cross-account role assumption plus a
+    trivial read-only STS call, proving the trust relationship works end
+    to end -- not just that a role_arn string was saved.
+    """
+    connection = await get_cloud_connection(session, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection_id: {connection_id!r}")
+    if not connection.role_arn:
+        raise HTTPException(status_code=400, detail="No role_arn set yet -- call the role-arn endpoint first")
+
+    ok, message = verify_role_access(connection.role_arn, connection.external_id)
+    connection.status = "verified" if ok else "failed"
+    connection.verified_at = datetime.now(UTC) if ok else connection.verified_at
+    connection.last_error = None if ok else message
+    await session.commit()
+
+    return {"connection_id": connection_id, "status": connection.status, "message": message}
+
+
+@app.get("/api/v1/cloud-connections/aws/{connection_id}", dependencies=[Depends(verify_api_key)])
+@limiter.limit(READ_LIMIT)
+async def get_aws_connection(
+    request: Request, connection_id: str, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    connection = await get_cloud_connection(session, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection_id: {connection_id!r}")
+    return {
+        "connection_id": connection.id,
+        "provider": connection.provider,
+        "role_arn": connection.role_arn,
+        "status": connection.status,
+        "created_at": connection.created_at.isoformat(),
+        "verified_at": connection.verified_at.isoformat() if connection.verified_at else None,
+        "last_error": connection.last_error,
     }

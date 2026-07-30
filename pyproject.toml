@@ -41,6 +41,12 @@ api = [
     "alembic>=1.13",
     "slowapi>=0.1.9",
     "sentry-sdk[fastapi]>=2.0",
+    # Cross-account STS role assumption for cloud_connections (see
+    # deployment/aws_access.py) -- using the SDK's sts.assume_role()
+    # directly instead of shelling out to the aws CLI, since this path
+    # handles short-lived credential material and boto3's session objects
+    # keep that out of subprocess argv/env manipulation entirely.
+    "boto3>=1.34",
 ]
 dev = [
     # aiosqlite: test-only, backs the API tests' hermetic in-memory DB
@@ -61,6 +67,10 @@ dev = [
     "alembic>=1.13",
     "slowapi>=0.1.9",
     "sentry-sdk[fastapi]>=2.0",
+    "boto3>=1.34",
+    # AWS API mocking for cloud_connections tests -- no real AWS account or
+    # credentials needed to test the STS assume-role flow.
+    "moto[sts]>=5.0",
 ]
 
 # ---------------------------------------------------------------------------
@@ -151,14 +161,16 @@ ignore_missing_imports = true
 
 # Optional live-cloud / document-generation SDKs used behind feature-gated
 # code paths (discovery/*_live.py, deployment/cloud_ops.py, reporting/
-# pdf_native.py). None ship inline types or a PEP 561 stub package, and none
-# are installed by the `dev` extra — pre-existing gap, unrelated to FastAPI.
+# pdf_native.py). None ship inline types or a PEP 561 stub package.
+# boto3/botocore are the exception -- installed by the `dev`/`api` extras
+# for real (cloud_access/aws.py), just still no inline types upstream.
 [[tool.mypy.overrides]]
 module = [
     "hcl2",
     "openpyxl.*",
     "azure.*",
     "boto3.*",
+    "botocore.*",
     "google.cloud.*",
     "googleapiclient.*",
     "hvac.*",

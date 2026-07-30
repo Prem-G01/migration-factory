@@ -45,6 +45,31 @@ class MigrationRun(Base):
     terraform_zip_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
 
+class CloudConnection(Base):
+    """A cross-account IAM role trust relationship a user has (or is being
+    asked to) set up in their own AWS account, granting this platform's
+    fixed identity permission to assume it. Deliberately holds no secret
+    material -- only a role ARN and an external ID, both safe to store in
+    plaintext. See PHASE_1_CLOUD_ACCESS design notes in the engine module
+    docstring for why this replaces storing long-lived user credentials.
+
+    Single-tenant for now (no user_id) -- this app has no account/auth
+    model beyond a shared API key today; add user_id once one exists
+    rather than guessing at its shape now.
+    """
+
+    __tablename__ = "cloud_connections"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider: Mapped[str] = mapped_column(String(16))
+    role_arn: Mapped[str] = mapped_column(String(255))
+    external_id: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending, verified, failed
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
@@ -91,3 +116,12 @@ async def delete_run(session: AsyncSession, run_id: str) -> bool:
     await session.delete(run)
     await session.commit()
     return True
+
+
+async def save_cloud_connection(session: AsyncSession, connection: CloudConnection) -> None:
+    session.add(connection)
+    await session.commit()
+
+
+async def get_cloud_connection(session: AsyncSession, connection_id: str) -> CloudConnection | None:
+    return await session.get(CloudConnection, connection_id)
