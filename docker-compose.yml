@@ -17,6 +17,10 @@ services:
     build: .
     environment:
       MF_DATABASE__URL: postgresql+asyncpg://mf_user:mf_pass@db:5432/migration_factory
+      # Dev-only key so `docker-compose up` works out of the box -- auth is
+      # fail-closed (see api/auth.py), so without this every request 503s.
+      # Override with a real value for anything beyond local dev.
+      API_KEYS: dev-key-12345
     ports:
       - "8000:8000"
     depends_on:

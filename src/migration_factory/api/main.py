@@ -25,9 +25,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from migration_factory.ai.engine import AIEngine
@@ -36,6 +37,14 @@ from migration_factory.api.database import MigrationRun, get_run, get_session, s
 from migration_factory.api.database import delete_run as db_delete_run
 from migration_factory.api.database import list_runs as db_list_runs
 from migration_factory.api.middleware import AuditLogMiddleware
+from migration_factory.api.rate_limit import (
+    ANALYZE_LIMIT,
+    DISCOVER_LIMIT,
+    READ_LIMIT,
+    WRITE_LIMIT,
+    limiter,
+    setup_rate_limiting,
+)
 from migration_factory.assessment.engine import AssessmentEngine
 from migration_factory.compliance.engine import ComplianceEngine
 from migration_factory.core.config import get_settings
@@ -46,6 +55,7 @@ from migration_factory.domain.enums import CloudProvider
 from migration_factory.events.engine import Event, EventBus, EventType
 from migration_factory.finops.engine import FinOpsEngine
 from migration_factory.knowledge_graph.engine import KnowledgeGraphEngine
+from migration_factory.monitoring.sentry_config import init_sentry
 from migration_factory.pipeline import IngestionPipeline
 from migration_factory.planner.engine import MigrationPlanner
 from migration_factory.reporting.engine import ReportingEngine
@@ -96,6 +106,8 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
+init_sentry()
+
 app = FastAPI(
     title="Migration Factory API",
     version="2.0.3",
@@ -118,6 +130,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(AuditLogMiddleware)
+setup_rate_limiting(app)
 
 
 @app.get("/")
@@ -302,7 +315,9 @@ def _run_pipeline(source_path: Path, source_filename: str, target: _Target | Non
 
 
 @app.post("/api/v1/analyze", dependencies=[Depends(verify_api_key)])
+@limiter.limit(ANALYZE_LIMIT)
 async def analyze(
+    request: Request,
     file: UploadFile = File(..., description="Terraform state (.tfstate), JSON, or CSV inventory file"),
     target: _Target | None = Form(None, description='One of: "gcp", "aws", "analyze_only" (omit for analyze_only)'),
     session: AsyncSession = Depends(get_session),
@@ -335,7 +350,8 @@ async def analyze(
 
 
 @app.get("/api/v1/report/{run_id}", dependencies=[Depends(verify_api_key)])
-async def get_report(run_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+@limiter.limit(READ_LIMIT)
+async def get_report(request: Request, run_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     run = await get_run(session, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Unknown run_id: {run_id!r}")
@@ -344,7 +360,10 @@ async def get_report(run_id: str, session: AsyncSession = Depends(get_session)) 
 
 
 @app.get("/api/v1/report/{run_id}/html", response_class=HTMLResponse, dependencies=[Depends(verify_api_key)])
-async def get_report_html(run_id: str, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+@limiter.limit(READ_LIMIT)
+async def get_report_html(
+    request: Request, run_id: str, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
     run = await get_run(session, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Unknown run_id: {run_id!r}")
@@ -352,7 +371,10 @@ async def get_report_html(run_id: str, session: AsyncSession = Depends(get_sessi
 
 
 @app.get("/api/v1/terraform/{run_id}", dependencies=[Depends(verify_api_key)])
-async def get_terraform(run_id: str, session: AsyncSession = Depends(get_session)) -> StreamingResponse:
+@limiter.limit(READ_LIMIT)
+async def get_terraform(
+    request: Request, run_id: str, session: AsyncSession = Depends(get_session)
+) -> StreamingResponse:
     run = await get_run(session, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Unknown run_id: {run_id!r}")
@@ -372,7 +394,8 @@ async def get_terraform(run_id: str, session: AsyncSession = Depends(get_session
 
 
 @app.get("/api/v1/runs", dependencies=[Depends(verify_api_key)])
-async def list_all_runs(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+@limiter.limit(READ_LIMIT)
+async def list_all_runs(request: Request, session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     runs = await db_list_runs(session)
     return {
         "runs": [
@@ -389,7 +412,10 @@ async def list_all_runs(session: AsyncSession = Depends(get_session)) -> dict[st
 
 
 @app.delete("/api/v1/runs/{run_id}", dependencies=[Depends(verify_api_key)])
-async def delete_run_endpoint(run_id: str, session: AsyncSession = Depends(get_session)) -> dict[str, bool]:
+@limiter.limit(WRITE_LIMIT)
+async def delete_run_endpoint(
+    request: Request, run_id: str, session: AsyncSession = Depends(get_session)
+) -> dict[str, bool]:
     deleted = await db_delete_run(session, run_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Unknown run_id: {run_id!r}")
@@ -406,7 +432,8 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 @app.get("/api/v1/discover/aws", dependencies=[Depends(verify_api_key)])
-def discover_aws(region: str = "us-east-1") -> dict[str, Any]:
+@limiter.limit(DISCOVER_LIMIT)
+def discover_aws(request: Request, region: str = "us-east-1") -> dict[str, Any]:
     """Live AWS discovery: runs the AWS CLI directly (describe-instances +
     describe-vpcs + describe-security-groups) instead of requiring a
     pre-exported file upload. Plain `def`, not `async def` -- these are
@@ -451,7 +478,8 @@ def discover_aws(region: str = "us-east-1") -> dict[str, Any]:
 
 
 @app.get("/api/v1/discover/gcp", dependencies=[Depends(verify_api_key)])
-def discover_gcp(project_id: str, region: str = "us-central1") -> dict[str, Any]:
+@limiter.limit(DISCOVER_LIMIT)
+def discover_gcp(request: Request, project_id: str, region: str = "us-central1") -> dict[str, Any]:
     """Live GCP discovery via `gcloud compute instances list`. See
     discover_aws's docstring for why this is a plain `def`.
     """
@@ -480,14 +508,28 @@ def discover_gcp(project_id: str, region: str = "us-central1") -> dict[str, Any]
 
 
 @app.get("/api/v1/health")
-def health() -> dict[str, Any]:
+async def health(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     # Static build metadata — update alongside the actual test/engine counts.
+    # Not rate-limited or auth-gated: Render (or any uptime monitor) needs to
+    # be able to hit this unconditionally. Goes through the same get_session
+    # dependency every other endpoint uses (not a raw get_engine() call) so
+    # tests overriding it for a hermetic DB get a truthful "healthy" here too.
+    try:
+        await session.execute(text("SELECT 1"))
+        db_status = "healthy"
+    except Exception as exc:
+        # Reported, not raised -- a DB outage shouldn't also take down the
+        # health check itself (that would make Render's liveness probe
+        # restart-loop the whole service instead of just flagging degraded).
+        db_status = f"unhealthy: {exc}"
+
     return {
-        "status": "ok",
+        "status": "ok" if db_status == "healthy" else "degraded",
         "version": "2.0.3",
         "engines": 28,
         "supported_sources": ["aws", "gcp"],
         "supported_targets": ["gcp", "aws"],
         "parsers": 10,
-        "tests_passing": 381,
+        "tests_passing": 387,
+        "database": db_status,
     }

@@ -39,6 +39,8 @@ api = [
     # available outside of dev/test too.
     "aiosqlite>=0.20",
     "alembic>=1.13",
+    "slowapi>=0.1.9",
+    "sentry-sdk[fastapi]>=2.0",
 ]
 dev = [
     # aiosqlite: test-only, backs the API tests' hermetic in-memory DB
@@ -57,6 +59,8 @@ dev = [
     "sqlalchemy>=2.0,<3",
     "asyncpg>=0.29",
     "alembic>=1.13",
+    "slowapi>=0.1.9",
+    "sentry-sdk[fastapi]>=2.0",
 ]
 
 # ---------------------------------------------------------------------------
