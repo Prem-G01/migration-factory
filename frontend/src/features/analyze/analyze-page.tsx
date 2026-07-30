@@ -2,13 +2,12 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { Dropzone } from "@/features/analyze/dropzone";
-import { UseCaseSelector } from "@/features/analyze/use-case-selector";
-import { DiscoverPanel } from "@/features/analyze/discover-panel";
-import { PipelineProgress } from "@/features/analyze/pipeline-progress";
-import { ReadyState } from "@/features/analyze/ready-state";
 import { ResultsView } from "@/features/results/results-view";
+import { StepIndicator, type WizardStepId } from "@/features/analyze/wizard/step-indicator";
+import { CloudStep } from "@/features/analyze/wizard/cloud-step";
+import { ConfigureStep, type WizardConfig } from "@/features/analyze/wizard/configure-step";
+import { UploadStep } from "@/features/analyze/wizard/upload-step";
+import { ProgressStep } from "@/features/analyze/wizard/progress-step";
 import { ALLOWED_EXTENSIONS, USE_CASES, getPipelineStages, type UseCaseId } from "@/constants/upload";
 import { usePipelineStages } from "@/hooks/use-pipeline-stages";
 import { useAnalyzeFile, useAnalyzeRawData } from "@/hooks/use-migration-queries";
@@ -26,8 +25,10 @@ function AnalyzePageInner() {
   const searchParams = useSearchParams();
   const runFromQuery = searchParams.get("run");
 
+  const [step, setStep] = useState<WizardStepId>(runFromQuery ? "results" : "cloud");
   const [activeRunId, setActiveRunId] = useState<string | null>(runFromQuery);
   const [useCaseId, setUseCaseId] = useState<UseCaseId>("aws_to_gcp");
+  const [config, setConfig] = useState<WizardConfig>({ region: "us-east-1", environment: "dev" });
   const [file, setFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [discovered, setDiscovered] = useState<DiscoverResponse | null>(null);
@@ -37,11 +38,13 @@ function AnalyzePageInner() {
   const { stageIndex, start: startStages, clear: clearStages } = usePipelineStages();
   const analyzeFile = useAnalyzeFile();
   const analyzeRawData = useAnalyzeRawData();
-  const loading = analyzeFile.isPending || analyzeRawData.isPending;
 
   // Deep link from Dashboard's "View" button: /?run=<id>.
   useEffect(() => {
-    if (runFromQuery) setActiveRunId(runFromQuery);
+    if (runFromQuery) {
+      setActiveRunId(runFromQuery);
+      setStep("results");
+    }
   }, [runFromQuery]);
 
   const handleFileSelect = (selected: File) => {
@@ -57,6 +60,7 @@ function AnalyzePageInner() {
   const goToResult = (runId: string) => {
     clearStages();
     setActiveRunId(runId);
+    setStep("results");
     router.replace(`/?run=${runId}`);
   };
 
@@ -65,15 +69,20 @@ function AnalyzePageInner() {
     setFile(null);
     setDiscovered(null);
     setSubmitError(null);
+    setStep("cloud");
     router.replace("/");
   };
 
   const handleSubmit = async () => {
     setSubmitError(null);
+    setStep("progress");
     startStages(getPipelineStages(useCase).length);
     try {
       if (useCase.isDiscover) {
-        if (!discovered) return;
+        if (!discovered) {
+          setStep("upload");
+          return;
+        }
         const result = await analyzeRawData.mutateAsync({
           rawData: discovered.raw_data,
           target: useCase.target,
@@ -84,6 +93,7 @@ function AnalyzePageInner() {
       if (!file) {
         setFileError("Drop a file first");
         clearStages();
+        setStep("upload");
         return;
       }
       const result = await analyzeFile.mutateAsync({ file, target: useCase.target });
@@ -91,67 +101,56 @@ function AnalyzePageInner() {
     } catch (error) {
       clearStages();
       setSubmitError(extractErrorMessage(error));
+      setStep("upload");
     }
   };
 
   const canSubmit = useCase.isDiscover ? discovered !== null : file !== null;
 
+  if (step === "results" && activeRunId) {
+    return <ResultsView runId={activeRunId} onNewAnalysis={startNewAnalysis} />;
+  }
+
   return (
-    <div className="grid h-full grid-cols-[400px_1fr]">
-      {/* Left: input panel */}
-      <div className="flex flex-col gap-5 overflow-y-auto border-r border-white/5 bg-black/10 p-6">
-        <h1 className="animate-fade-up text-2xl font-bold">Analyze Infrastructure</h1>
+    <div className="flex h-full flex-col">
+      {step !== "progress" && (
+        <div className="animate-fade-up flex justify-center border-b border-white/5 bg-black/10 py-4">
+          <StepIndicator current={step} />
+        </div>
+      )}
 
-        <UseCaseSelector value={useCaseId} onChange={setUseCaseId} />
+      {step === "cloud" && (
+        <CloudStep value={useCaseId} onChange={setUseCaseId} onNext={() => setStep("configure")} />
+      )}
 
-        {useCase.isDiscover ? (
-          <DiscoverPanel discovered={discovered} onDiscovered={setDiscovered} />
-        ) : (
-          <Dropzone file={file} onFileSelect={handleFileSelect} error={fileError} />
-        )}
+      {step === "configure" && (
+        <ConfigureStep
+          useCaseId={useCaseId}
+          value={config}
+          onChange={setConfig}
+          onNext={() => setStep("upload")}
+          onBack={() => setStep("cloud")}
+        />
+      )}
 
-        {loading && (
-          <PipelineProgress stages={getPipelineStages(useCase)} stageIndex={stageIndex} />
-        )}
+      {step === "upload" && (
+        <UploadStep
+          useCase={useCase}
+          file={file}
+          fileError={fileError}
+          onFileSelect={handleFileSelect}
+          discovered={discovered}
+          onDiscovered={setDiscovered}
+          submitError={submitError}
+          canSubmit={canSubmit}
+          onSubmit={handleSubmit}
+          onBack={() => setStep("configure")}
+        />
+      )}
 
-        {submitError && (
-          <p className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-            {submitError}
-          </p>
-        )}
-
-        <Button
-          onClick={handleSubmit}
-          disabled={loading || !canSubmit}
-          className="h-14 gap-2 rounded-xl bg-gradient-to-r from-[var(--cyan)] to-[#0066ff] text-lg font-bold text-black disabled:from-[var(--dim)] disabled:to-[var(--dim)] disabled:text-muted-foreground"
-        >
-          {loading ? (
-            <>
-              ⏳ Analyzing
-              <span className="flex gap-0.5">
-                {[0, 1, 2].map((d) => (
-                  <span
-                    key={d}
-                    className="inline-block size-1.5 rounded-full bg-current"
-                    style={{ animation: `bounceDots 1.2s ease-in-out ${d * 0.15}s infinite` }}
-                  />
-                ))}
-              </span>
-            </>
-          ) : (
-            "🚀 Analyze Infrastructure"
-          )}
-        </Button>
-      </div>
-
-      {/* Right: empty state or results */}
-      <div className="overflow-hidden">
-        {activeRunId ? (
-          <ResultsView runId={activeRunId} onNewAnalysis={startNewAnalysis} />
-        ) : (
-          <ReadyState />
-        )}
-      </div>
+      {step === "progress" && (
+        <ProgressStep stages={getPipelineStages(useCase)} stageIndex={stageIndex} />
+      )}
     </div>
   );
 }
