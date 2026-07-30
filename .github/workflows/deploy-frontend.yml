@@ -38,6 +38,13 @@ jobs:
         run: npm run build
         env:
           NEXT_PUBLIC_API_URL: https://migration-factory.onrender.com
+          # Repo secret, not a build const: Settings > Secrets and
+          # variables > Actions > New repository secret, name API_KEY,
+          # value must match one entry in Render's API_KEYS env var. Not
+          # a real secret once built (this is a static site -- anyone can
+          # read it out of the shipped JS), just keeps it out of git
+          # history/PR diffs.
+          NEXT_PUBLIC_API_KEY: ${{ secrets.API_KEY }}
           GITHUB_PAGES: 'true'
 
       - name: Upload artifact

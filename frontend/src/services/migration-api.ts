@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "@/lib/config";
+import { API_BASE_URL, API_KEY } from "@/lib/config";
 import type {
   AnalyzeResponse,
   DiscoverResponse,
@@ -28,11 +28,20 @@ async function extractErrorDetail(response: Response): Promise<string> {
   }
 }
 
+function authHeaders(existing?: HeadersInit): Headers {
+  const headers = new Headers(existing);
+  if (API_KEY) headers.set("X-API-Key", API_KEY);
+  return headers;
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, init);
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers: authHeaders(init?.headers),
+  });
   if (!response.ok) {
     throw new ApiError(response.status, await extractErrorDetail(response));
   }
@@ -70,7 +79,9 @@ export async function getReport(runId: string): Promise<MigrationReport> {
 }
 
 export async function getHtmlReport(runId: string): Promise<string> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/report/${runId}/html`);
+  const response = await fetch(`${API_BASE_URL}/api/v1/report/${runId}/html`, {
+    headers: authHeaders(),
+  });
   if (!response.ok) {
     throw new ApiError(response.status, await extractErrorDetail(response));
   }
@@ -82,6 +93,7 @@ export async function downloadTerraform(runId: string): Promise<void> {
     // Errors need to be read as JSON, so don't assume the body is a
     // zip up front — check response.ok first, same trap as the old
     // frontend's responseType:"blob" axios gotcha.
+    headers: authHeaders(),
   });
   if (!response.ok) {
     throw new ApiError(response.status, await extractErrorDetail(response));
