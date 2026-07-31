@@ -14,6 +14,7 @@ import { ComplianceTab } from "@/features/results/compliance-tab";
 import { SecurityTab } from "@/features/results/security-tab";
 import { AITab } from "@/features/results/ai-tab";
 import { MappingTab } from "@/features/results/mapping-tab";
+import { CliPanel } from "@/features/results/cli-panel";
 import { useDownloadTerraform, useReport } from "@/hooks/use-migration-queries";
 import { getHtmlReport } from "@/services/migration-api";
 import { COLORS, RISK_COLORS, STRATEGY_COLORS, directionColor, scoreColor } from "@/constants/theme";
@@ -262,6 +263,9 @@ export function ResultsView({ runId, onNewAnalysis }: ResultsViewProps) {
             )}
             Download Terraform
           </Button>
+        )}
+        {!isAnalyzeOnly && (
+          <CliPanel runId={runId} targetProvider={report.target_provider} direction={report.direction} />
         )}
         <Button
           variant="outline"
