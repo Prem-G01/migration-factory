@@ -241,6 +241,18 @@
   50%      { transform: translate(0, -18px) rotate(var(--motif-rotate, 0deg)); }
 }
 
+@keyframes ringPulse {
+  0%   { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+@keyframes pipelineFlow {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.pipeline-flow { animation: pipelineFlow 1.2s linear infinite; }
+
 .animate-fade-up { animation: fadeUp 0.4s ease forwards; }
 .animate-glow    { animation: glow 2s ease-in-out infinite; }
 .animate-slide   { animation: slideInRight 0.3s ease forwards; }
