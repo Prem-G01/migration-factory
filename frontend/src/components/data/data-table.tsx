@@ -47,7 +47,7 @@ export function DataTable<T>({
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-white/5">
+    <div className="overflow-x-auto rounded-lg border border-[var(--glass-border-soft)]">
       <Table>
         <TableHeader>
           <TableRow className="hover:bg-transparent">

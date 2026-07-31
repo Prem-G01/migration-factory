@@ -31,7 +31,7 @@ export function DistributionBars({
             </span>
             <span className="text-muted-foreground">{entry.count}</span>
           </div>
-          <div className="h-1 overflow-hidden rounded-full bg-white/5">
+          <div className="h-1 overflow-hidden rounded-full bg-[var(--glass-2)]">
             <motion.div
               className="h-full rounded-full"
               style={{ background: entry.color }}

@@ -22,7 +22,7 @@ export function StepIndicator({ current }: { current: WizardStepId }) {
               <div
                 className="flex size-6 items-center justify-center rounded-full font-mono text-[11px] font-semibold transition-colors"
                 style={{
-                  background: done || active ? "var(--cyan)" : "rgba(255,255,255,0.06)",
+                  background: done || active ? "var(--cyan)" : "var(--glass-2)",
                   color: done || active ? "var(--void)" : "var(--muted-c)",
                   boxShadow: active ? "0 0 12px rgba(0,212,255,0.5)" : undefined,
                 }}
@@ -39,7 +39,7 @@ export function StepIndicator({ current }: { current: WizardStepId }) {
             {i < STEPS.length - 1 && (
               <div
                 className="mb-[18px] h-px w-8 transition-colors"
-                style={{ background: done ? "var(--cyan)" : "rgba(255,255,255,0.08)" }}
+                style={{ background: done ? "var(--cyan)" : "var(--glass-border)" }}
               />
             )}
           </div>

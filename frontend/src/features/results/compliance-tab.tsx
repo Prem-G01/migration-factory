@@ -30,7 +30,7 @@ export function ComplianceTab({ frameworks }: { frameworks: FrameworkResult[] })
             return (
               <div
                 key={f.framework}
-                className="card-hover rounded-xl border border-white/10 bg-white/[0.02] p-4"
+                className="card-hover rounded-xl border border-[var(--glass-border)] bg-[var(--glass-1)] p-4"
               >
                 <div className="mb-2 flex items-center justify-between">
                   <span className="font-mono text-sm text-foreground/90">{f.framework}</span>
@@ -38,7 +38,7 @@ export function ComplianceTab({ frameworks }: { frameworks: FrameworkResult[] })
                     {pct}%
                   </span>
                 </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-white/5">
+                <div className="h-1.5 overflow-hidden rounded-full bg-[var(--glass-2)]">
                   <motion.div
                     className="h-full rounded-full"
                     style={{ background: color }}

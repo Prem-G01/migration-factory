@@ -28,7 +28,7 @@ function AnalyzePageInner() {
   const [step, setStep] = useState<WizardStepId>(runFromQuery ? "results" : "cloud");
   const [activeRunId, setActiveRunId] = useState<string | null>(runFromQuery);
   const [useCaseId, setUseCaseId] = useState<UseCaseId>("aws_to_gcp");
-  const [config, setConfig] = useState<WizardConfig>({ region: "us-east-1", environment: "dev" });
+  const [config, setConfig] = useState<WizardConfig>({ region: "us-east-1", environment: "dev", gcpProjectId: "" });
   const [file, setFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [discovered, setDiscovered] = useState<DiscoverResponse | null>(null);
@@ -46,6 +46,15 @@ function AnalyzePageInner() {
       setStep("results");
     }
   }, [runFromQuery]);
+
+  // TopNav's logo/Home button — resets the wizard even when we're
+  // already on "/" (a plain route change wouldn't touch this state).
+  useEffect(() => {
+    const onGoHome = () => startNewAnalysis();
+    window.addEventListener("mf:go-home", onGoHome);
+    return () => window.removeEventListener("mf:go-home", onGoHome);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleFileSelect = (selected: File) => {
     const ext = selected.name.split(".").pop()?.toLowerCase() ?? "";
@@ -114,7 +123,7 @@ function AnalyzePageInner() {
   return (
     <div className="flex h-full flex-col">
       {step !== "progress" && (
-        <div className="animate-fade-up flex justify-center border-b border-white/5 bg-black/10 py-4">
+        <div className="animate-fade-up flex justify-center border-b border-[var(--glass-border-soft)] bg-[var(--nav-bg-soft)] py-4">
           <StepIndicator current={step} />
         </div>
       )}

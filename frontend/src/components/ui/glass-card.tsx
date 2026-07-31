@@ -22,8 +22,8 @@ export function GlassCard({
     <motion.div
       data-slot="glass-card"
       className={cn(
-        "relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-md",
-        "shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset]",
+        "relative overflow-hidden rounded-xl border border-[var(--glass-border)] bg-[var(--glass-1)] p-4 backdrop-blur-xl",
+        "shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset,0_8px_24px_-8px_var(--shadow-c)]",
         className,
       )}
       whileHover={

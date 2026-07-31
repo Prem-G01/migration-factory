@@ -22,7 +22,7 @@ export function WaveTimeline({ waves }: { waves: MigrationWave[] }) {
             initial={{ opacity: 0, x: -8 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.3, delay: i * 0.04 }}
-            className="relative z-10 flex items-center gap-3 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5"
+            className="relative z-10 flex items-center gap-3 rounded-lg border border-[var(--glass-border-soft)] bg-[var(--glass-1)] px-3 py-2.5"
           >
             <div className="flex size-[30px] shrink-0 items-center justify-center rounded-full border border-primary/25 bg-primary/10 font-mono text-xs text-primary">
               {wave.wave_number}

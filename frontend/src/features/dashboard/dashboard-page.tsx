@@ -116,7 +116,7 @@ export function DashboardPage() {
       render: (r) => (
         <button
           onClick={() => router.push(`/?run=${r.run_id}`)}
-          className="rounded-md border border-white/10 px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+          className="rounded-md border border-[var(--glass-border)] px-3 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
         >
           View
         </button>

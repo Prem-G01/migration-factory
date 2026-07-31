@@ -248,7 +248,7 @@ export function ResultsView({ runId, onNewAnalysis }: ResultsViewProps) {
       </Tabs>
     </div>
 
-      <div className="flex shrink-0 justify-center gap-2 border-t border-white/5 bg-black/20 px-6 py-3 backdrop-blur-md">
+      <div className="flex shrink-0 justify-center gap-2 border-t border-[var(--glass-border-soft)] bg-[var(--nav-bg)] px-6 py-3 backdrop-blur-md">
         {!isAnalyzeOnly && (
           <Button
             onClick={handleDownload}

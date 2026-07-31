@@ -22,7 +22,7 @@ export function SecurityTab({
         GCP Security Command Center.
       </DisclosureNote>
 
-      <div className="mb-4 flex items-center gap-4 rounded-xl border border-white/5 bg-white/[0.02] p-4">
+      <div className="mb-4 flex items-center gap-4 rounded-xl border border-[var(--glass-border-soft)] bg-[var(--glass-1)] p-4">
         <ScoreRing score={score} size={88} strokeWidth={7} />
         <div>
           <div className="text-base text-foreground/90">Security Score</div>
@@ -39,7 +39,7 @@ export function SecurityTab({
           {findings.slice(0, 8).map((f, i) => (
             <div
               key={i}
-              className="flex items-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5 text-sm"
+              className="flex items-center gap-2 rounded-lg border border-[var(--glass-border-soft)] bg-[var(--glass-1)] px-3 py-2.5 text-sm"
             >
               <span
                 className="rounded-full px-2 py-0.5 font-mono text-[10px]"

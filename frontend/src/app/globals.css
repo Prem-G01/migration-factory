@@ -51,14 +51,73 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* This app is permanently dark — there is no light-mode toggle, so the
-   root tokens ARE the dark tokens (not shadcn's default light palette).
-   Named tokens (--void, --cyan, etc.) are the source of truth, mirrored
+/* Named tokens (--void, --cyan, etc.) are the source of truth, mirrored
    in src/constants/theme.ts for use in JS (canvas, SVG, chart colors).
    The --color-* / shadcn semantic tokens below just alias them so
    Button/Card/Tabs and the rest of the shadcn primitives pick up the
-   same palette automatically. */
-:root,
+   same palette automatically. next-themes toggles the .dark class on
+   <html>; :root holds the light palette, .dark overrides it. --glass-*
+   / --nav-* are theme-aware replacements for what used to be literal
+   bg-white/[0.03] etc. — those only read right on a near-black canvas,
+   so glass surfaces need their own light-mode values too. */
+:root {
+  --void: #eef2f9;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --border-c: #dde3ee;
+  --cyan: #0091c2;
+  --green: #05966b;
+  --orange: #d9560f;
+  --purple: #6d28d9;
+  --yellow: #b45309;
+  --red: #dc2626;
+  --text: #101828;
+  --muted-c: #5b6472;
+  --dim: #c7cedb;
+
+  --glass-1: rgba(15, 23, 42, 0.035);
+  --glass-2: rgba(15, 23, 42, 0.06);
+  --glass-border: rgba(15, 23, 42, 0.1);
+  --glass-border-soft: rgba(15, 23, 42, 0.06);
+  --nav-bg: rgba(255, 255, 255, 0.65);
+  --nav-bg-soft: rgba(255, 255, 255, 0.45);
+  --shadow-c: rgba(15, 23, 42, 0.1);
+  --motif-opacity: 0.05;
+
+  --background: var(--void);
+  --foreground: var(--text);
+  --card: var(--surface);
+  --card-foreground: var(--text);
+  --popover: var(--raised);
+  --popover-foreground: var(--text);
+  --primary: var(--cyan);
+  --primary-foreground: #ffffff;
+  --secondary: var(--raised);
+  --secondary-foreground: var(--text);
+  --muted: #f1f4f9;
+  --muted-foreground: var(--muted-c);
+  --accent: rgba(0, 145, 194, 0.08);
+  --accent-foreground: var(--cyan);
+  --destructive: var(--red);
+  --border: var(--border-c);
+  --input: var(--border-c);
+  --ring: rgba(0, 145, 194, 0.35);
+  --chart-1: var(--cyan);
+  --chart-2: var(--green);
+  --chart-3: var(--yellow);
+  --chart-4: var(--purple);
+  --chart-5: var(--orange);
+  --radius: 0.625rem;
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--text);
+  --sidebar-primary: var(--cyan);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(0, 145, 194, 0.08);
+  --sidebar-accent-foreground: var(--cyan);
+  --sidebar-border: var(--border-c);
+  --sidebar-ring: rgba(0, 145, 194, 0.35);
+}
+
 .dark {
   --void: #020818;
   --surface: #0d1117;
@@ -73,6 +132,15 @@
   --text: #f0f6fc;
   --muted-c: #8b949e;
   --dim: #3d444d;
+
+  --glass-1: rgba(255, 255, 255, 0.03);
+  --glass-2: rgba(255, 255, 255, 0.05);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-border-soft: rgba(255, 255, 255, 0.05);
+  --nav-bg: rgba(0, 0, 0, 0.2);
+  --nav-bg-soft: rgba(0, 0, 0, 0.1);
+  --shadow-c: rgba(0, 0, 0, 0.4);
+  --motif-opacity: 0.07;
 
   --background: var(--void);
   --foreground: var(--text);
@@ -108,6 +176,13 @@
   --sidebar-ring: rgba(0, 212, 255, 0.4);
 }
 
+:root {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -118,6 +193,9 @@
     font-size: 16px;
     line-height: 1.6;
     overflow-x: hidden;
+  }
+  html {
+    transition: background-color 0.25s ease;
   }
 }
 
@@ -158,9 +236,15 @@
   to { --angle: 360deg; }
 }
 
+@keyframes motifFloat {
+  0%, 100% { transform: translate(0, 0) rotate(var(--motif-rotate, 0deg)); }
+  50%      { transform: translate(0, -18px) rotate(var(--motif-rotate, 0deg)); }
+}
+
 .animate-fade-up { animation: fadeUp 0.4s ease forwards; }
 .animate-glow    { animation: glow 2s ease-in-out infinite; }
 .animate-slide   { animation: slideInRight 0.3s ease forwards; }
+.animate-motif-float { animation: motifFloat 10s ease-in-out infinite; }
 
 .upload-zone-border {
   --angle: 0deg;

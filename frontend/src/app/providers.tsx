@@ -2,8 +2,14 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
+import { ThemeProvider, useTheme } from "next-themes";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
+
+function ThemedToaster() {
+  const { resolvedTheme } = useTheme();
+  return <Toaster theme={resolvedTheme === "light" ? "light" : "dark"} position="bottom-right" />;
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -19,11 +25,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider delay={200}>
-        {children}
-        <Toaster theme="dark" position="bottom-right" />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false} disableTransitionOnChange>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delay={200}>
+          {children}
+          <ThemedToaster />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
   );
 }
